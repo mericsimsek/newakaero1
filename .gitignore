@@ -1,0 +1,23 @@
+# Sanal Ortam (Bunlar Git'e gitmesin)
+venv/
+env/
+
+# Python Önbellek Dosyaları
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Gizli Ayar Dosyaları
+.env
+
+# Editör/IDE Ayarları
+.vscode/
+.idea/
+
+# İşletim Sistemi Dosyaları
+.DS_Store
+Thumbs.db
+
+# İsteğe Bağlı: Veritabanını Git'e atmak İSTEMEZSEN alttaki satırın başındaki # işaretini kaldır.
+# data/*.db
