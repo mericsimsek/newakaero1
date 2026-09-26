@@ -93,6 +93,10 @@ genai.configure(api_key=GEMINI_API_KEY)
 # BAĞLAM (CONTEXT) OLUŞTURMA — filtrelenmiş veriden özet tablolar + kullanılan
 # metriklerin formülleri bir arada modele gönderilir.
 # =============================================================================
+# =============================================================================
+# BAĞLAM (CONTEXT) OLUŞTURMA — filtrelenmiş veriden özet tablolar + kullanılan
+# metriklerin formülleri bir arada modele gönderilir.
+# =============================================================================
 def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
     parcalar = []
     kullanilan_metrikler: list[str] = []
@@ -124,30 +128,45 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
 
     setup_kirilim = compute_setup_parca_kirilimi(df)
     if not setup_kirilim.empty:
-        parcalar.append("### TABLO 6: SETUP OPERATÖR×PARÇA KIRILIMI (ilk 100 satır)\n" + setup_kirilim.head(100).to_csv(index=False))
+        parcalar.append("### TABLO 6: SETUP OPERATÖR×PARÇA KIRILIMI\n" + setup_kirilim.to_csv(index=False))
         kullanilan_metrikler.append("setup_ortalama")
 
     if "TARİH" in df.columns:
         gunluk_ozet = df.groupby([df["TARİH"].dt.date, "TEZGAH", "Durum"])["Sure_Saat"].sum().reset_index()
-        parcalar.append("### TABLO 7: GÜNLÜK TEZGAH-DURUM SÜRE ÖZETİ (ilk 300 satır)\n" + gunluk_ozet.head(300).to_csv(index=False))
+        parcalar.append("### TABLO 7: GÜNLÜK TEZGAH-DURUM SÜRE ÖZETİ\n" + gunluk_ozet.to_csv(index=False))
 
-    return "\n\n".join(parcalar)[:15000], sorted(set(kullanilan_metrikler))
+    # --- KRİTİK EKLEME: SATIR BAZLI ETL ÇIKTISI (KRONOLOJİK VERİ) ---
+    # Modelin "15 Ağustos'ta AB-03 hangi parçayı işledi?" gibi sorulara cevap verebilmesi için
+    # doğrudan veritabanından gelen temiz (df) verinin gerekli kolonlarını ekliyoruz.
+    secilecek_kolonlar = [
+        "TARİH", "BAŞLANGIÇ_SAAT", "BİTİŞ_SAAT", "TEZGAH", 
+        "KOD & OPE.", "PARÇA NO_ÜRETİM_GİRİLEN", "Durum", 
+        "Sure_Saat", "Durus_Kategorisi", "Operator_Kod"
+    ]
+    mevcut_kolonlar = [col for col in secilecek_kolonlar if col in df.columns]
+    
+    if mevcut_kolonlar:
+        kronolojik_veri = df[mevcut_kolonlar].copy()
+        parcalar.append("### TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI (Satır Bazlı Döküm)\n" + kronolojik_veri.to_csv(index=False))
+
+    # DİKKAT: [:15000] karakter limitini tamamen sildik! 
+    # Gemini 1.5'in devasa token limiti sayesinde artık tüm detaylı veri bozulmadan modele ulaşacak.
+    return "\n\n".join(parcalar), sorted(set(kullanilan_metrikler))
 
 
 baglam, kullanilan_metrikler = _baglam_ve_kullanilan_metrikler(df)
 formul_bloklari = "\n\n".join(metrik_aciklamasi(k) for k in kullanilan_metrikler)
 
 SISTEM_PROMPTU = f"""Sen bir fabrikanın üretim verisi asistanısın. Sana verilen özet CSV
-tablolarına ve METRİK SÖZLÜĞÜ'ne dayanarak Türkçe, net ve sayısal cevaplar ver.
+tablolarına, KRONOLOJİK DETAY tablosuna (TABLO 8) ve METRİK SÖZLÜĞÜ'ne dayanarak Türkçe, net ve sayısal cevaplar ver.
 
 KURALLAR:
 1. Her sayısal iddianı, hangi TABLO'dan ve hangi METRİK'ten geldiğini belirterek destekle.
    Örnek: "AB-07 tezgahının kullanılabilirliği %99.1 (Kullanılabilirlik metriği, TABLO 1)."
-2. Kullanıcı "bunu nasıl hesapladın?" ya da "hangi formülle buldun?" diye sorarsa,
-   İLGİLİ METRİĞİN TAM FORMÜLÜNÜ aşağıdaki METRİK SÖZLÜĞÜ'nden birebir alıntılayarak açıkla,
-   ve varsa tablo içindeki gerçek sayılarla formülü doldurarak göster (örn. "(102.00+0.0)/(102.00+6.25+0.0)×100=%94.2").
-3. Veride olmayan bir şeyi UYDURMA. Emin değilsen açıkça "bu veriyle hesaplanamıyor" de.
-4. Kısa ve öz cevap ver, ama sayısal doğruluktan ödün verme.
+2. Kullanıcı dakika dakika, parça bazlı veya kronolojik olay (şu tarihte ne oldu?) sorarsa KESİNLİKLE 'TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI' tablosunu satır satır tara ve tarih/saat belirterek cevapla.
+3. Kullanıcı "bunu nasıl hesapladın?" ya da "hangi formülle buldun?" diye sorarsa, İLGİLİ METRİĞİN TAM FORMÜLÜNÜ aşağıdaki METRİK SÖZLÜĞÜ'nden birebir alıntıla ve sayıları formüle koyarak göster.
+4. Veride olmayan bir şeyi UYDURMA. Emin değilsen açıkça "bu veriyle hesaplanamıyor" de.
+5. Kısa ve öz cevap ver, ama sayısal doğruluktan ödün verme.
 
 --- METRİK SÖZLÜĞÜ (bu sohbette kullanılan tablolarla ilgili formüller) ---
 {formul_bloklari}
