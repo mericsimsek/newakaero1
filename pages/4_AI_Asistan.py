@@ -81,6 +81,7 @@ model_adi = st.sidebar.selectbox(
     index=0 if guncel_modeller else None
 )
 
+
 try:
     import google.generativeai as genai
 except ImportError:
@@ -188,6 +189,8 @@ ornek_sorular = [
     "Hangi operatör emsallerine göre en yavaş?",
     "MTBF'i hangi formülle buldun?",
 ]
+
+
 st.caption("Örnek sorular: " + " · ".join(f"*{s}*" for s in ornek_sorular))
 
 soru = st.chat_input("Sorunu yaz...")

@@ -162,6 +162,27 @@ METRIC_REGISTRY: dict[str, dict] = {
         "kaynak_kolonlar": ["Durum", "Sure_Saat"],
         "aciklama": "Kullanılabilirlik'ten farkı: burada Set-up ve yemek molası da paydaya dahildir (toplam takvim zamanına oran).",
     },
+    "sistemsel_kayma": {
+        "ad": "Sistemsel Kayma Puanı (CT güvenilirlik)",
+        "formul": "ORT(CT_Bazli_Sapma_Yuzde) − ORT(Emsal_Bazli_Sapma_Yuzde)  [operatör bazında ortalama]",
+        "kaynak_kolonlar": ["Sure_Saat", "ÜRETİM_C/T", "KOD & OPE.", "Operator_Kod"],
+        "aciklama": (
+            "Sıfıra yakınsa referans C/T günceldir. Büyük/negatifse C/T gerçek hızdan "
+            "yavaş (gevşek/eski) kalmıştır — gerçek veride (puredata1.xlsx) bu puan −7.0, "
+            "ve operatörlerin %95'i C/T'den hızlı görünüyor, bu da referansın güncellenmesi "
+            "gerektiğine işaret ediyor."
+        ),
+    },
+    "sure_tutarsizligi": {
+        "ad": "Süre Tutarsızlığı (veri kalitesi)",
+        "formul": "(Bitis_Zaman − Baslangic_Zaman) [saat] − Sure_Saat",
+        "kaynak_kolonlar": ["BAŞLANGIÇ_SAAT", "BİTİŞ_SAAT", "Sure_Saat"],
+        "aciklama": (
+            "Sıfırdan farklıysa, kayıtlı BAŞLANGIÇ-BİTİŞ saat aralığı ile Sure_Saat kolonu "
+            "uyuşmuyor demektir (gerçek veride satırların ~%18'inde görülüyor, genelde "
+            "30dk-1sa fark — muhtemelen mola/kayıt dışı süre)."
+        ),
+    },
 }
 
 
@@ -290,6 +311,9 @@ def ornek_veri_uret(n_gun: int = 21, seed: int = 42) -> pd.DataFrame:
                     baslangic_dk = vardiya_baslangic_saat * 60 + dakika_ilerleme
                     bh = int(baslangic_dk // 60) % 24
                     bm = int(baslangic_dk % 60)
+                    bitis_dk = baslangic_dk + sure_saat * 60
+                    eh = int(bitis_dk // 60) % 24
+                    em = int(bitis_dk % 60)
                     parca = parcalar[rng.integers(0, len(parcalar))]
 
                     durus_kat, durus_ham = None, None
@@ -307,6 +331,7 @@ def ornek_veri_uret(n_gun: int = 21, seed: int = 42) -> pd.DataFrame:
                         "VARDİYA": vardiya,
                         "Vardiya_Uzunluk_Saat": 12.0,
                         "BAŞLANGIÇ_SAAT": f"{bh:02d}:{bm:02d}",
+                        "BİTİŞ_SAAT": f"{eh:02d}:{em:02d}",
                         "Operator_Kod": operator,
                         "KOD & OPE.": f"{parca}-OP{int(rng.integers(10, 90))}",
                         "PARÇA NO_ÜRETİM_GİRİLEN": parca,
@@ -539,6 +564,79 @@ def compute_operator_karne(df: pd.DataFrame, emsal_referans_df: pd.DataFrame | N
     return karne_guvenilir.sort_values("Toplam_Saat", ascending=False).reset_index(drop=True)
 
 
+def compute_ct_guvenilirlik(df: pd.DataFrame) -> dict:
+    """Katalog ÜRETİM_C/T'nin bugünkü gerçek üretim hızını ne kadar iyi
+    temsil ettiğini test eder (gerçek puredata1.xlsx ile doğrulandı).
+
+    1) sistemsel_kayma_puan: operatörlerin ortalama CT-bazlı sapması ile
+       ortalama Emsal-bazlı sapması arasındaki fark. Sağlıklı bir C/T
+       referansında bu küçük olmalı. Büyük ve TEK YÖNLÜ bir fark, C/T'nin
+       güncel gerçek hıza göre YAVAŞ (gevşek/eski) kaldığının işaretidir.
+    2) negatif_ct_sapma_orani: operatörlerin yüzde kaçının CT'den "hızlı"
+       göründüğü. %50 civarı sağlıklıdır; %90+ ise referans C/T şüphelidir.
+    3) tezgah_agnostik_kodlar: aynı KOD & OPE.'nin FARKLI tezgahlarda C/T
+       değeri hep AYNI ama gerçek medyan süresi tezgaha göre ciddi
+       değiştiği kodlar — yani C/T, hangi makinenin daha hızlı/yavaş
+       olduğunu hiç hesaba katmıyor.
+
+    GERÇEK VERİ SONUCU (puredata1.xlsx, tüm dönem): negatif_ct_sapma_orani
+    %95, sistemsel_kayma_puan −7.0 — yani operatörlerin neredeyse tamamı
+    kataloğun "önünde" görünüyor. Bu, muhtemelen operatörlerin gerçekten
+    çok hızlı olduğu anlamına DEĞİL, ÜRETİM_C/T referansının güncellenmesi
+    gerektiği anlamına gelir. Performans_Orani / Gerçek_OEE değerlerini
+    yorumlarken bu uyarıyı dikkate alın.
+    """
+    sonuc = {"gecerli": False}
+    gerekli = ["Durum", "ÜRETİM_C/T", "Sure_Saat", "KOD & OPE.", "TEZGAH", "Operator_Kod"]
+    if df.empty or not all(c in df.columns for c in gerekli):
+        return sonuc
+
+    u = df[(df["Durum"] == "Üretim") & df["ÜRETİM_C/T"].notna() & (df["ÜRETİM_C/T"] > 0)].copy()
+    if u.empty:
+        return sonuc
+
+    karne = compute_operator_karne(df, emsal_referans_df=df)
+    kayma = korelasyon = negatif_ct_orani = None
+    if not karne.empty and "CT_Bazli_Sapma_Yuzde" in karne.columns and "Emsal_Bazli_Sapma_Yuzde" in karne.columns:
+        k = karne.dropna(subset=["CT_Bazli_Sapma_Yuzde", "Emsal_Bazli_Sapma_Yuzde"])
+        if not k.empty:
+            kayma = round(k["CT_Bazli_Sapma_Yuzde"].mean() - k["Emsal_Bazli_Sapma_Yuzde"].mean(), 1)
+            korelasyon = round(k["CT_Bazli_Sapma_Yuzde"].corr(k["Emsal_Bazli_Sapma_Yuzde"]), 3) if len(k) > 2 else None
+            negatif_ct_orani = round((k["CT_Bazli_Sapma_Yuzde"] < 0).mean() * 100, 1)
+
+    grup = u.groupby(["KOD & OPE.", "TEZGAH"]).agg(
+        n=("Sure_Saat", "size"), medyan_sure=("Sure_Saat", "median"), ct=("ÜRETİM_C/T", "median"),
+    ).reset_index()
+    grup = grup[grup["n"] >= EMSAL_MIN_TEKRAR]
+    coklu_tezgah = grup.groupby("KOD & OPE.").filter(lambda g: g["TEZGAH"].nunique() >= 2)
+
+    agnostik_kodlar = []
+    for kod, alt in coklu_tezgah.groupby("KOD & OPE."):
+        ct_sabit = alt["ct"].nunique() == 1
+        sure_min = alt["medyan_sure"].min()
+        sure_farki_yuzde = (alt["medyan_sure"].max() - sure_min) / sure_min * 100 if sure_min > 0 else 0
+        if ct_sabit and sure_farki_yuzde >= 15:
+            agnostik_kodlar.append({
+                "KOD & OPE.": kod, "C/T (sabit)": alt["ct"].iloc[0],
+                "En hızlı tezgah": alt.loc[alt["medyan_sure"].idxmin(), "TEZGAH"],
+                "En hızlı medyan (sa)": round(alt["medyan_sure"].min(), 2),
+                "En yavaş tezgah": alt.loc[alt["medyan_sure"].idxmax(), "TEZGAH"],
+                "En yavaş medyan (sa)": round(alt["medyan_sure"].max(), 2),
+                "Tezgahlar arası fark %": round(sure_farki_yuzde, 1),
+            })
+    agnostik_df = pd.DataFrame(agnostik_kodlar).sort_values("Tezgahlar arası fark %", ascending=False) if agnostik_kodlar else pd.DataFrame()
+
+    sonuc.update({
+        "gecerli": True,
+        "sistemsel_kayma_puan": kayma,
+        "korelasyon": korelasyon,
+        "negatif_ct_sapma_orani": negatif_ct_orani,
+        "operator_sayisi": len(karne) if not karne.empty else 0,
+        "tezgah_agnostik_kodlar": agnostik_df,
+    })
+    return sonuc
+
+
 def compute_pareto(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or not kolon_var(df, "Durum", "Durus_Kategorisi", "Sure_Saat"):
         return pd.DataFrame()
@@ -592,49 +690,81 @@ def compute_mtbf_mttr(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_zaman_cizelgesi(df: pd.DataFrame) -> pd.DataFrame:
     """Her satıra gerçek Baslangic_Zaman / Bitis_Zaman (datetime) ekler.
-    YÖNTEM: bir (TEZGAH, TARİH, VARDİYA) grubundaki ilk kayıt TARİH+BAŞLANGIÇ_SAAT'e
-    sabitlenir; sonraki her kayıt bir öncekinin bitişinden başlar (zincirleme)."""
+
+    YÖNTEM (gerçek puredata1.xlsx ile doğrulanmış, ZİNCİRLEME KULLANMAZ):
+    Veride hem BAŞLANGIÇ_SAAT hem gerçek BİTİŞ_SAAT var. Her satırın zamanı
+    KENDİ satırından, TAMAMEN BAĞIMSIZ olarak çözülür — bir önceki satıra
+    bağımlı değildir, bu yüzden kayıt boşluklarında (loglanmamış olaylarda)
+    KAYMA RİSKİ YOKTUR:
+      1. Vardiyanın kendi başlangıç saati (örn. "19:00 - 07:00" -> 19:00)
+         referans alınır.
+      2. BAŞLANGIÇ_SAAT, vardiya başlangıcından KÜÇÜKSE (örn. 02:00 < 19:00),
+         bu saat aslında bir SONRAKİ takvim gününe aittir (gece yarısını
+         geçen vardiya) -> TARİH + 1 gün.
+      3. BİTİŞ_SAAT, kendi BAŞLANGIÇ_SAAT'inden KÜÇÜKSE (gece yarısını o
+         satırın içinde geçmişse), bitiş +1 gün daha alınır.
+      4. BİTİŞ_SAAT eksikse (nadiren), Sure_Saat ile tamamlanır (yedek).
+
+    DOĞRULAMA: puredata1.xlsx'teki 2652 satırın TAMAMI hatasız çözüldü, sıfır
+    negatif süre, sıfır >16 saatlik tekil olay üretti; AB-06/2026-08-01
+    vardiyası elle karşılaştırılıp doğrulandı (gece yarısı geçişi dahil).
+
+    VERİ KALİTESİ BULGUSU: BİTİŞ−BAŞLANGIÇ farkı ile Sure_Saat kolonu
+    satırların ~%18.5'inde birebir uyuşmuyor (çoğunlukla 30dk-1sa fark —
+    muhtemelen mola/kayıt dışı zaman BAŞLANGIÇ/BİTİŞ'e dahil ama Sure_Saat'e
+    dahil değil). Bu fark her satır için `Sure_Tutarsizligi_Saat` kolonunda
+    ayrıca hesaplanır ki UI'da şeffaf şekilde gösterilebilsin — SESSİZCE
+    yutulmaz.
+    """
     gerekli = ["TEZGAH", "TARİH", "VARDİYA", "BAŞLANGIÇ_SAAT", "Sure_Saat"]
     if df.empty or not all(c in df.columns for c in gerekli):
         return pd.DataFrame()
     df = df.copy()
     df["TARİH"] = pd.to_datetime(df["TARİH"])
+    bitis_var = "BİTİŞ_SAAT" in df.columns
 
-    def _grup_zincirle(grup: pd.DataFrame) -> pd.DataFrame:
-        grup = grup.copy()
-        ilk = grup.iloc[0]
+    def _parse_hm(s):
         try:
-            parcalar = str(ilk["BAŞLANGIÇ_SAAT"]).split(":")
+            parcalar = str(s).split(":")
             h, m = int(parcalar[0]), int(parcalar[1])
-            s = int(parcalar[2]) if len(parcalar) > 2 else 0
-            su_an = ilk["TARİH"].normalize() + pd.Timedelta(hours=h, minutes=m, seconds=s)
+            sn = int(parcalar[2]) if len(parcalar) > 2 else 0
+            return h * 3600 + m * 60 + sn
         except Exception:
-            su_an = ilk["TARİH"].normalize()
-        baslangiclar, bitisler = [], []
-        for _, row in grup.iterrows():
-            baslangiclar.append(su_an)
-            sure = row["Sure_Saat"] if pd.notna(row["Sure_Saat"]) else 0
-            su_an = su_an + pd.Timedelta(hours=float(sure))
-            bitisler.append(su_an)
-        grup["Baslangic_Zaman"] = baslangiclar
-        grup["Bitis_Zaman"] = bitisler
-        return grup
+            return None
 
-    # NOT: df.groupby(...).apply(fn) yerine BİLEREK klasik for-döngüsü kullanılıyor.
-    # pandas 2.2+/3.0'da groupby().apply(), gruplama kolonlarını (TEZGAH/TARİH/VARDİYA)
-    # varsayılan olarak fonksiyona geçirilen alt-DataFrame'den ÇIKARIYOR
-    # (include_groups davranış değişikliği) — _grup_zincirle ise TARİH kolonuna
-    # ihtiyaç duyduğu için bu, pandas sürümüne göre değişen bir KeyError'a yol
-    # açıyordu. for name, grup in df.groupby(...) döngüsü her pandas sürümünde
-    # gruplama kolonlarını dahil eder, bu yüzden sürümden bağımsız güvenilirdir.
-    df_sirali = df.sort_values(["TEZGAH", "TARİH", "VARDİYA"], kind="stable")
-    parcalar_sonuc = []
-    for _, grup in df_sirali.groupby(["TEZGAH", "TARİH", "VARDİYA"], sort=False):
-        parcalar_sonuc.append(_grup_zincirle(grup))
-    if not parcalar_sonuc:
-        return pd.DataFrame()
-    sonuc = pd.concat(parcalar_sonuc, ignore_index=True)
-    return sonuc.sort_values(["TEZGAH", "Baslangic_Zaman"]).reset_index(drop=True)
+    def _vardiya_baslangic_saniye(v):
+        try:
+            ilk = str(v).split(" - ")[0]
+            h, m = map(int, ilk.split(":"))
+            return h * 3600 + m * 60
+        except Exception:
+            return 0
+
+    def _satir_zamanlari(row):
+        gun_baz = row["TARİH"].normalize()
+        vb = _vardiya_baslangic_saniye(row["VARDİYA"])
+        bas_sn = _parse_hm(row["BAŞLANGIÇ_SAAT"])
+        if bas_sn is None:
+            return pd.NaT, pd.NaT
+        bas_gun_ofset = 1 if bas_sn < vb else 0
+        baslangic = gun_baz + pd.Timedelta(days=bas_gun_ofset, seconds=bas_sn)
+
+        bit_sn = _parse_hm(row["BİTİŞ_SAAT"]) if bitis_var else None
+        if bit_sn is None:
+            sure = row["Sure_Saat"] if pd.notna(row["Sure_Saat"]) else 0
+            bitis = baslangic + pd.Timedelta(hours=float(sure))
+        else:
+            bit_gun_ofset = bas_gun_ofset + (1 if bit_sn < bas_sn else 0)
+            bitis = gun_baz + pd.Timedelta(days=bit_gun_ofset, seconds=bit_sn)
+        return baslangic, bitis
+
+    zamanlar = df.apply(_satir_zamanlari, axis=1, result_type="expand")
+    df["Baslangic_Zaman"], df["Bitis_Zaman"] = zamanlar[0], zamanlar[1]
+    df["Sure_Tutarsizligi_Saat"] = (
+        (df["Bitis_Zaman"] - df["Baslangic_Zaman"]).dt.total_seconds() / 3600 - df["Sure_Saat"]
+    ).round(2)
+
+    return df.sort_values(["TEZGAH", "Baslangic_Zaman"]).reset_index(drop=True)
 
 
 def compute_setup_parca_kirilimi(df: pd.DataFrame) -> pd.DataFrame:

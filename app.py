@@ -17,6 +17,7 @@ from common import (
     RENK, DURUM_SIRASI, METRIC_REGISTRY, metrik_aciklamasi, kolon_var,
     veri_yukle_ve_filtrele, compute_tezgah_oee, compute_operator_karne,
     compute_pareto, compute_vardiya_yorgunluk, compute_mtbf_mttr, compute_heatmap,
+    compute_ct_guvenilirlik,
 )
 
 st.set_page_config(page_title="Üretim Zekası Dashboard", layout="wide", page_icon="🏭")
@@ -61,7 +62,7 @@ st.info(
 
 sekmeler = st.tabs([
     "Tezgah Özeti", "Duruş Pareto", "Operatör Karnesi", "Parça-Tezgah Isı Haritası",
-    "Vardiya Yorgunluk", "MTBF & MTTR",
+    "Vardiya Yorgunluk", "MTBF & MTTR", "⚠️ CT Güvenilirlik",
 ])
 
 with sekmeler[0]:
@@ -138,6 +139,60 @@ with sekmeler[5]:
         st.dataframe(mtbf, use_container_width=True, hide_index=True)
         with st.expander("📖 Formüller"):
             st.markdown(metrik_aciklamasi("mtbf")); st.markdown("---"); st.markdown(metrik_aciklamasi("mttr"))
+
+with sekmeler[6]:
+    st.subheader("⚠️ Referans C/T (Cycle Time) Ne Kadar Güvenilir?")
+    st.caption(
+        "Tezgah/operatör performansını yorumlamadan ÖNCE bu sekmeyi kontrol edin — "
+        "referans C/T güncel değilse, Performans_Oranı ve Gerçek_OEE değerleri "
+        "yanıltıcı (sistematik şişirilmiş) çıkabilir."
+    )
+    ct = compute_ct_guvenilirlik(df)
+    if not ct.get("gecerli"):
+        st.info("Bu filtrede CT güvenilirlik analizi için yeterli veri yok.")
+    else:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Sistemsel Kayma Puanı", f"{ct['sistemsel_kayma_puan']:+.1f}" if ct['sistemsel_kayma_puan'] is not None else "—")
+        c2.metric("CT'den Hızlı Görünen Operatör %", f"%{ct['negatif_ct_sapma_orani']:.1f}" if ct['negatif_ct_sapma_orani'] is not None else "—")
+        c3.metric("Korelasyon (CT sapma ↔ Emsal sapma)", f"{ct['korelasyon']:.2f}" if ct['korelasyon'] is not None else "—")
+
+        negatif_oran = ct.get("negatif_ct_sapma_orani")
+        if negatif_oran is not None and negatif_oran >= 80:
+            st.error(
+                f"🚨 Operatörlerin **%{negatif_oran:.0f}'i** referans C/T'den daha hızlı görünüyor. "
+                "Bu, operatörlerin gerçekten çok hızlı olduğu anlamına gelmekten çok, "
+                "**ÜRETİM_C/T referansının güncellenmesi gerektiğine** işaret eder. "
+                "`Performans_Oranı` ve `Gerçek_OEE`'yi mutlak değeriyle değil, "
+                "TEZGAHLAR/OPERATÖRLER ARASI KIYASLAMA için kullanın."
+            )
+        elif negatif_oran is not None and negatif_oran <= 20:
+            st.warning(
+                f"Operatörlerin sadece %{negatif_oran:.0f}'i C/T'den hızlı — referans C/T "
+                "muhtemelen GERÇEKÇİ OLMAYAN KADAR SIKI (çok iddialı) olabilir."
+            )
+        else:
+            st.success("Sistemsel kayma sınırlı görünüyor — referans C/T makul bir denge içinde.")
+
+        with st.expander("📖 Bu puanlar nasıl hesaplandı?"):
+            st.markdown(
+                "**Sistemsel Kayma Puanı** = ORT(CT_Bazli_Sapma_%) − ORT(Emsal_Bazli_Sapma_%) "
+                "[operatör bazında]. Sıfıra yakınsa C/T ile emsal-gerçeklik uyumlu demektir; "
+                "büyük ve negatifse C/T gerçek hızdan YAVAŞ (gevşek) kalmış demektir.\n\n"
+                "**CT'den Hızlı Görünen Operatör %** = operatörlerin CT_Bazli_Sapma_Yuzde'si "
+                "negatif olanların oranı. Sağlıklı/güncel bir referansta ~%50 civarı beklenir; "
+                "aşırı yüksek veya aşırı düşük oranlar referansın güncelliğini sorgulatır."
+            )
+
+        agnostik = ct.get("tezgah_agnostik_kodlar")
+        if agnostik is not None and not agnostik.empty:
+            st.markdown("---")
+            st.markdown(
+                f"**🔍 Tezgah-Agnostik {len(agnostik)} Kod Bulundu** — aynı 'KOD & OPE.' "
+                "kodu için C/T sabit ama gerçek medyan süre tezgaha göre ≥%15 değişiyor. "
+                "Yani bu kodlarda C/T, hangi tezgahın daha hızlı/yavaş olduğunu hiç hesaba "
+                "katmıyor — operatörü değil, atandığı tezgahı ölçmüş oluyorsunuz demektir."
+            )
+            st.dataframe(agnostik, use_container_width=True, hide_index=True)
 
 st.markdown("---")
 st.caption("Üretim Zekası Dashboard'u · Streamlit + Plotly · production.db uyumlu")
