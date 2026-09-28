@@ -20,6 +20,15 @@ from common import (
     compute_zaman_cizelgesi, compute_aylik_ozet, compute_onerilen_ct,
 )
 
+# ---------------------------------------------------------------- GERÇEK İSİM SÖZLÜĞÜ
+OPERATOR_SOZLUGU = {
+  "Op_001": "AŞKIN SAKALLI", "Op_002": "BERAT TUNÇ", "Op_003": "CİHAN SARIGÜL", "Op_004": "EMRE TOPRAK", 
+  "Op_005": "EREN TAMER YELEKÇİ", "Op_006": "ERTUĞRUL ÖZDEMİR", "Op_007": "HAMZA KARAASLAN", "Op_008": "HÜSEYİN YENİCE", 
+  "Op_009": "HÜSEYİN YILMAZ", "Op_010": "İLKER SEZDİ", "Op_011": "MEHMET ALİ ÇOLAK", "Op_012": "MEHMET EMRE KARAKAŞ", 
+  "Op_013": "MERT KUŞCU", "Op_014": "MESUT ARDIÇ", "Op_015": "MUHAMMED KORKMAZ", "Op_016": "NAZİF GÜÇLÜDAĞ", 
+  "Op_017": "NURULLAH ZENGİN", "Op_018": "ÖZCAN ÇELİK", "Op_019": "TANER GÜÇLÜDAĞ", "Op_020": "UMUT ÖZKAN", "Op_021": "YAŞAR ŞENOL"
+}
+
 st.set_page_config(page_title="AI Fabrika Asistanı", layout="wide", page_icon="🤖")
 st.title("🤖 AI Fabrika Asistanı")
 st.caption(
@@ -30,15 +39,19 @@ st.caption(
 df_ham, df, kaynak_notu = veri_yukle_ve_filtrele("asistan")
 st.caption(kaynak_notu)
 
+if df.empty:
+    st.warning("Seçili filtrelerle eşleşen veri yok.")
+    st.stop()
+
+# GERÇEK İSİMLERİ VERİYE UYGULA (AI'ın okuyup isimle cevap verebilmesi için)
+if "Operator_Kod" in df.columns:
+    df["Operator_Kod"] = df["Operator_Kod"].replace(OPERATOR_SOZLUGU)
+
 # ---------------------------------------------------------------- METRİK SÖZLÜĞÜ (her zaman görünür)
 with st.expander("📖 Kullanılan Tüm Metrik ve Formüller Sözlüğü", expanded=False):
     for anahtar in METRIC_REGISTRY:
         st.markdown(metrik_aciklamasi(anahtar))
         st.markdown("---")
-
-if df.empty:
-    st.warning("Seçili filtrelerle eşleşen veri yok.")
-    st.stop()
 
 st.markdown("---")
 
@@ -139,21 +152,19 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
         kullanilan_metrikler.append("onerilen_ct")
 
     # --- KRİTİK EKLEME: SATIR BAZLI ETL ÇIKTISI (KRONOLOJİK VERİ) ---
-    # Modelin "15 Ağustos'ta AB-03 hangi parçayı işledi?" gibi sorulara cevap verebilmesi için
-    # doğrudan veritabanından gelen temiz (df) verinin gerekli kolonlarını ekliyoruz.
     secilecek_kolonlar = [
         "TARİH", "BAŞLANGIÇ_SAAT", "BİTİŞ_SAAT", "TEZGAH", 
         "KOD & OPE.", "PARÇA NO_ÜRETİM_GİRİLEN", "Durum", 
-        "Sure_Saat", "Durus_Kategorisi", "Operator_Kod"
+        "Sure_Saat", "Durus_Kategorisi", "Durus_Sebebi_Ham", "Operator_Kod"
     ]
     mevcut_kolonlar = [col for col in secilecek_kolonlar if col in df.columns]
     
     if mevcut_kolonlar:
         kronolojik_veri = df[mevcut_kolonlar].copy()
+        if "Sure_Saat" in kronolojik_veri.columns:
+            kronolojik_veri["Sure_Dakika"] = (kronolojik_veri["Sure_Saat"] * 60).round(0)
         parcalar.append("### TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI (Satır Bazlı Döküm)\n" + kronolojik_veri.to_csv(index=False))
 
-    # DİKKAT: [:15000] karakter limitini tamamen sildik! 
-    # Gemini 1.5'in devasa token limiti sayesinde artık tüm detaylı veri bozulmadan modele ulaşacak.
     return "\n\n".join(parcalar), sorted(set(kullanilan_metrikler))
 
 
@@ -166,10 +177,10 @@ tablolarına, KRONOLOJİK DETAY tablosuna (TABLO 8) ve METRİK SÖZLÜĞÜ'ne da
 KURALLAR:
 1. Her sayısal iddianı, hangi TABLO'dan ve hangi METRİK'ten geldiğini belirterek destekle.
    Örnek: "AB-07 tezgahının kullanılabilirliği %99.1 (Kullanılabilirlik metriği, TABLO 1)."
-2. Kullanıcı dakika dakika, parça bazlı veya kronolojik olay (şu tarihte ne oldu?) sorarsa KESİNLİKLE 'TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI' tablosunu satır satır tara ve tarih/saat belirterek cevapla.
-3. Kullanıcı "bunu nasıl hesapladın?" ya da "hangi formülle buldun?" diye sorarsa, İLGİLİ METRİĞİN TAM FORMÜLÜNÜ aşağıdaki METRİK SÖZLÜĞÜ'nden birebir alıntıla ve sayıları formüle koyarak göster.
-4. Veride olmayan bir şeyi UYDURMA. Emin değilsen açıkça "bu veriyle hesaplanamıyor" de.
-5. Kısa ve öz cevap ver, ama sayısal doğruluktan ödün verme.
+2. Kullanıcı duruş özeti, dakika dakika, parça bazlı veya kronolojik olay sorarsa KESİNLİKLE 'TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI' tablosunu satır satır tara. Operatör kodları yerine gerçek isimleri ("Operator_Kod" sütunu) kullanarak detaylı listele.
+3. Bir duruşu raporlarken Operatör İsmi, Parça, Dakika (Sure_Dakika) ve Sebebini kesinlikle belirt.
+4. Kullanıcı "bunu nasıl hesapladın?", "neden türettin?" veya "hangi formülle buldun?" diye sorarsa, İLGİLİ METRİĞİN TAM FORMÜLÜNÜ VE MANTIĞINI METRİK SÖZLÜĞÜ'nden birebir alıntıla.
+5. Veride olmayan bir şeyi UYDURMA. Emin değilsen açıkça "bu veriyle hesaplanamıyor" de.
 
 --- METRİK SÖZLÜĞÜ (bu sohbette kullanılan tablolarla ilgili formüller) ---
 {formul_bloklari}
@@ -190,8 +201,8 @@ ornek_sorular = [
     "AB-07'nin kullanılabilirliğini nasıl hesapladın?",
     "Hangi operatör emsallerine göre en yavaş?",
     "MTBF'i hangi formülle buldun?",
+    "1-9 Ağustos arası duruş özeti ver."
 ]
-
 
 st.caption("Örnek sorular: " + " · ".join(f"*{s}*" for s in ornek_sorular))
 
@@ -204,19 +215,16 @@ if soru:
     try:
         with st.chat_message("assistant"):
             with st.spinner("Veriler ve formüller analiz ediliyor..."):
-                # Gemini modelini ve sistem promptunu (tabloları) yüklüyoruz
                 model = genai.GenerativeModel(
                     model_name=model_adi,
                     system_instruction=SISTEM_PROMPTU
                 )
                 
-                # Streamlit geçmişini Gemini'nin anlayacağı formata çeviriyoruz
                 gemini_gecmis = []
                 for mesaj in st.session_state.sohbet_gecmisi[:-1]: 
                     role = "user" if mesaj["role"] == "user" else "model"
                     gemini_gecmis.append({"role": role, "parts": [mesaj["content"]]})
                 
-                # Sohbeti başlat ve soruyu gönder
                 chat = model.start_chat(history=gemini_gecmis)
                 response = chat.send_message(soru)
                 cevap = response.text
