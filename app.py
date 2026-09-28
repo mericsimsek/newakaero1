@@ -17,7 +17,7 @@ from common import (
     RENK, DURUM_SIRASI, METRIC_REGISTRY, metrik_aciklamasi, kolon_var,
     veri_yukle_ve_filtrele, compute_tezgah_oee, compute_operator_karne,
     compute_pareto, compute_vardiya_yorgunluk, compute_mtbf_mttr, compute_heatmap,
-    compute_ct_guvenilirlik,
+    compute_ct_guvenilirlik, compute_onerilen_ct, compute_ct_cozum_etkisi,
 )
 
 st.set_page_config(page_title="Üretim Zekası Dashboard", layout="wide", page_icon="🏭")
@@ -193,6 +193,46 @@ with sekmeler[6]:
                 "katmıyor — operatörü değil, atandığı tezgahı ölçmüş oluyorsunuz demektir."
             )
             st.dataframe(agnostik, use_container_width=True, hide_index=True)
+
+        # ---------------------------------------------------------- ÇÖZÜM
+        st.markdown("---")
+        st.subheader("✅ Çözüm: Veri-Türetilmiş 'Önerilen C/T'")
+        st.caption(
+            "Katalog C/T güncel değilse, verinin kendisinden (tüm operatörlerin gerçek "
+            "medyan süresinden) türetilmiş bir referans kullanılabilir — zaten Emsal "
+            "Karşılaştırması'nda kullanılan aynı güvenilir yöntem."
+        )
+        onerilen = compute_onerilen_ct(df)
+        etki = compute_ct_cozum_etkisi(df)
+        if onerilen.empty or not etki.get("gecerli"):
+            st.info("Önerilen C/T hesaplamak için yeterli tekrarlı (n≥3) kod bulunamadı.")
+        else:
+            e1, e2, e3 = st.columns(3)
+            e1.metric(
+                "CT'den Hızlı Görünen % (ÖNCE → SONRA)",
+                f"%{etki['yeni_negatif_ct_sapma_orani']:.1f}",
+                delta=f"{etki['yeni_negatif_ct_sapma_orani'] - (negatif_oran or 0):+.1f} puan (sağlıklıya {'yaklaştı' if abs(etki['yeni_negatif_ct_sapma_orani']-50) < abs((negatif_oran or 0)-50) else 'uzaklaştı'})",
+                delta_color="normal",
+            )
+            e2.metric("Güncelleme Önerilen Kod Sayısı", f"{int(onerilen['Guncelleme_Onerisi'].sum())} / {len(onerilen)}")
+            e3.metric("Kapsanan İşlem", f"{etki['kapsanan_islem_sayisi']:,} / {int(df.loc[df['Durum']=='Üretim'].shape[0]):,}")
+
+            if negatif_oran is not None:
+                st.success(
+                    f"Katalog C/T yerine **Önerilen C/T** kullanılsaydı, 'operatörlerin CT'den "
+                    f"hızlı görünme oranı' **%{negatif_oran:.1f} → %{etki['yeni_negatif_ct_sapma_orani']:.1f}**'e "
+                    f"inerdi (sağlıklı denge %50 civarıdır) — bu, referans C/T'nin gerçekten "
+                    f"GÜNCEL OLMADIĞININ güçlü bir kanıtıdır."
+                )
+
+            st.markdown("**Güncellenmesi önerilen kodlar** (|fark| ≥ %15, en büyük farktan küçüğe):")
+            st.dataframe(
+                onerilen[onerilen["Guncelleme_Onerisi"]],
+                use_container_width=True, hide_index=True,
+            )
+            with st.expander("📖 Bu tablo nasıl hesaplandı? / Tüm kodlar (öneri eşiği altındakiler dahil)"):
+                st.markdown(metrik_aciklamasi("onerilen_ct"))
+                st.dataframe(onerilen, use_container_width=True, hide_index=True)
 
 st.markdown("---")
 st.caption("Üretim Zekası Dashboard'u · Streamlit + Plotly · production.db uyumlu")

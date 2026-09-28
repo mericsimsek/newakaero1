@@ -17,7 +17,7 @@ from common import (
     METRIC_REGISTRY, metrik_aciklamasi, veri_yukle_ve_filtrele,
     compute_tezgah_oee, compute_operator_karne, compute_pareto,
     compute_mtbf_mttr, compute_vardiya_yorgunluk, compute_setup_parca_kirilimi,
-    compute_zaman_cizelgesi, compute_aylik_ozet,
+    compute_zaman_cizelgesi, compute_aylik_ozet, compute_onerilen_ct,
 )
 
 st.set_page_config(page_title="AI Fabrika Asistanı", layout="wide", page_icon="🤖")
@@ -43,10 +43,15 @@ if df.empty:
 st.markdown("---")
 
 # ---------------------------------------------------------------- API AYARLARI
-# ---------------------------------------------------------------- API AYARLARI
 import os
+
 from dotenv import load_dotenv
-import google.generativeai as genai
+
+try:
+    import google.generativeai as genai
+except ImportError:
+    st.error("`google-generativeai` kurulu değil. Kurulum: `pip install google-generativeai`")
+    st.stop()
 
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -57,6 +62,7 @@ if not GEMINI_API_KEY:
 
 # Google kütüphanesini API anahtarınla başlatıyoruz
 genai.configure(api_key=GEMINI_API_KEY)
+
 
 # Google sunucularından anlık aktif modelleri çeken dinamik fonksiyon
 @st.cache_data(show_spinner=False)
@@ -72,28 +78,15 @@ def aktif_modelleri_getir():
         st.sidebar.error(f"Modeller çekilemedi: {e}")
     return modeller
 
+
 guncel_modeller = aktif_modelleri_getir()
-
-# Yan menüyü Google'ın anlık olarak izin verdiği modellerle doldur
-model_adi = st.sidebar.selectbox(
-    "Google Gemini Modeli", 
-    guncel_modeller, 
-    index=0 if guncel_modeller else None
-)
-
-
-try:
-    import google.generativeai as genai
-except ImportError:
-    st.error("`google-generativeai` kurulu değil. Kurulum: `pip install google-generativeai`")
+if not guncel_modeller:
+    st.error("Google'dan aktif model listesi alınamadı (API anahtarı geçersiz olabilir ya da ağ engelleniyor).")
     st.stop()
 
-# Google kütüphanesini API anahtarınla başlatıyoruz
-genai.configure(api_key=GEMINI_API_KEY)
-# =============================================================================
-# BAĞLAM (CONTEXT) OLUŞTURMA — filtrelenmiş veriden özet tablolar + kullanılan
-# metriklerin formülleri bir arada modele gönderilir.
-# =============================================================================
+# Yan menüyü Google'ın anlık olarak izin verdiği modellerle doldur
+model_adi = st.sidebar.selectbox("Google Gemini Modeli", guncel_modeller, index=0)
+
 # =============================================================================
 # BAĞLAM (CONTEXT) OLUŞTURMA — filtrelenmiş veriden özet tablolar + kullanılan
 # metriklerin formülleri bir arada modele gönderilir.
@@ -135,6 +128,15 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
     if "TARİH" in df.columns:
         gunluk_ozet = df.groupby([df["TARİH"].dt.date, "TEZGAH", "Durum"])["Sure_Saat"].sum().reset_index()
         parcalar.append("### TABLO 7: GÜNLÜK TEZGAH-DURUM SÜRE ÖZETİ\n" + gunluk_ozet.to_csv(index=False))
+
+    onerilen_ct = compute_onerilen_ct(df)
+    if not onerilen_ct.empty:
+        parcalar.append(
+            "### TABLO 9: ÖNERİLEN C/T (katalog C/T'nin verinin kendisinden türetilmiş, "
+            "güncellenmesi önerilen alternatifi — Guncelleme_Onerisi=True olan kodlarda katalog "
+            "C/T şüpheli/eski kabul edilmeli)\n" + onerilen_ct.to_csv(index=False)
+        )
+        kullanilan_metrikler.append("onerilen_ct")
 
     # --- KRİTİK EKLEME: SATIR BAZLI ETL ÇIKTISI (KRONOLOJİK VERİ) ---
     # Modelin "15 Ağustos'ta AB-03 hangi parçayı işledi?" gibi sorulara cevap verebilmesi için

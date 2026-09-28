@@ -71,6 +71,7 @@ else:
         Farkli_Parca_Sayisi=("PARÇA NO_ÜRETİM_GİRİLEN", "nunique"),
     ).reset_index()
     op_ozet["Ort_Setup_Dakika"] = (op_ozet["Toplam_Setup_Saat"] * 60 / op_ozet["Toplam_Adet"]).round(1)
+    op_ozet["Toplam_Setup_Saat"] = op_ozet["Toplam_Setup_Saat"].round(2)
     fig = px.bar(
         op_ozet.sort_values("Ort_Setup_Dakika", ascending=False),
         x="Operator_Kod", y="Ort_Setup_Dakika", color="Toplam_Adet",

@@ -53,6 +53,7 @@ RENK = {
     "Yemek_Mola": "#8D6E63",
     "Rework": "#EF6C00",
     "Sınıflandırılmamış": "#90A4AE",
+    "Kayıt Dışı / Bilinmeyen": "#BDBDBD",
 }
 DURUM_SIRASI = ["Üretim", "Plansız_Duruş", "Set_Up", "Yemek_Mola", "Rework", "Sınıflandırılmamış"]
 
@@ -181,6 +182,16 @@ METRIC_REGISTRY: dict[str, dict] = {
             "Sıfırdan farklıysa, kayıtlı BAŞLANGIÇ-BİTİŞ saat aralığı ile Sure_Saat kolonu "
             "uyuşmuyor demektir (gerçek veride satırların ~%18'inde görülüyor, genelde "
             "30dk-1sa fark — muhtemelen mola/kayıt dışı süre)."
+        ),
+    },
+    "onerilen_ct": {
+        "ad": "Önerilen C/T (CT sorununa çözüm)",
+        "formul": "MEDYAN(Sure_Saat)  [aynı 'KOD & OPE.' için, TÜM operatörler, Durum='Üretim', n≥EMSAL_MIN_TEKRAR]",
+        "kaynak_kolonlar": ["KOD & OPE.", "Sure_Saat", "Durum"],
+        "aciklama": (
+            "Katalog ÜRETİM_C/T güncel olmadığında (bkz. Sistemsel Kayma) kullanılacak, "
+            "verinin kendisinden türetilmiş güvenilir bir alternatif referans. Fark_Yuzde "
+            "≥%15 olan kodlarda katalog C/T'nin güncellenmesi önerilir."
         ),
     },
 }
@@ -465,6 +476,21 @@ def kolon_var(df: pd.DataFrame, *kolonlar) -> bool:
     return all(k in df.columns for k in kolonlar)
 
 
+def _yuvarla(df: pd.DataFrame, **kolon_ondalik) -> pd.DataFrame:
+    """Belirtilen kolonları verilen ondalık basamağa yuvarlar (varsa).
+    Saat toplamları gibi değerler kesir dakikalardan (10dk=1/6sa=0.1666...,
+    20dk=1/3sa=0.3333...) geldiği için float toplama sonunda uzun, çirkin
+    ondalıklar (örn. 29.977777...) üretir — bu matematiksel olarak DOĞRU bir
+    değerdir, veri bozukluğu değildir, ama ekranda gösterime uygun değildir.
+    Her compute_* fonksiyonu, döndürdüğü DataFrame'i bu fonksiyondan
+    geçirerek tutarlı bir gösterim hassasiyeti garanti eder."""
+    df = df.copy()
+    for kolon, ondalik in kolon_ondalik.items():
+        if kolon in df.columns:
+            df[kolon] = pd.to_numeric(df[kolon], errors="coerce").round(ondalik)
+    return df
+
+
 # =============================================================================
 # HESAPLAMA FONKSİYONLARI — gerçek etl.py'deki compute_* fonksiyonlarının
 # BİREBİR aynı mantığı (config.* yerine yukarıdaki modül sabitleri kullanılır)
@@ -509,6 +535,11 @@ def compute_tezgah_oee(df: pd.DataFrame) -> pd.DataFrame:
             ozet = ozet.merge(en_buyuk_2, on="TEZGAH", how="left")
     if "En_Buyuk_Kayip_Kategorileri" not in ozet.columns:
         ozet["En_Buyuk_Kayip_Kategorileri"] = None
+    ozet = _yuvarla(
+        ozet, Uretim_Saat=2, Plansiz_Durus_Saat=2, Set_Up_Saat=2, Yemek_Saat=2, Rework_Saat=2,
+        Planlanan_Sure=2, Kullanilabilirlik=4, Kalite_Orani=4, OEE_Yaklasik=4,
+        Performans_Orani=4, Gercek_OEE=4,
+    )
     return ozet.sort_values("Uretim_Saat", ascending=False).reset_index(drop=True)
 
 
@@ -559,6 +590,10 @@ def compute_operator_karne(df: pd.DataFrame, emsal_referans_df: pd.DataFrame | N
         gun_sayisi = 30
     efektif_esik = min(KARNE_MIN_SAAT, KARNE_MIN_SAAT_GUNLUK * gun_sayisi)
     karne_guvenilir = karne[karne["Toplam_Saat"] >= efektif_esik].copy()
+    karne_guvenilir = _yuvarla(
+        karne_guvenilir, Toplam_Saat=2, Islem_Saat_Hizi=3,
+        CT_Bazli_Sapma_Yuzde=1, Emsal_Bazli_Sapma_Yuzde=1,
+    )
     karne_guvenilir.attrs["efektif_esik_saat"] = efektif_esik
     karne_guvenilir.attrs["gun_sayisi"] = gun_sayisi
     return karne_guvenilir.sort_values("Toplam_Saat", ascending=False).reset_index(drop=True)
@@ -637,6 +672,69 @@ def compute_ct_guvenilirlik(df: pd.DataFrame) -> dict:
     return sonuc
 
 
+def compute_onerilen_ct(df: pd.DataFrame) -> pd.DataFrame:
+    """CT GÜVENİLİRLİK SORUNUNA SOMUT ÇÖZÜM: katalog ÜRETİM_C/T yerine, her
+    'KOD & OPE.' için TÜM operatörlerin gerçek fiili sürelerinin medyanından
+    türetilen 'Onerilen_CT_Saat' hesaplar (zaten Emsal_Medyan_Saat'te
+    kullanılan aynı güvenilir yöntem: medyan, aykırı değerlere dayanıklıdır).
+
+    Sadece n >= EMSAL_MIN_TEKRAR tekrarı olan kodlar için öneri üretilir
+    (az veriyle istatistik güvenilmez olur). Fark_Yuzde ≥ %15 ise (mutlak
+    değer) 'Guncelleme_Onerisi' True olur — bu kodun katalog C/T'sinin
+    muhtemelen güncellenmesi gerektiği anlamına gelir.
+    """
+    gerekli = ["Durum", "KOD & OPE.", "Sure_Saat", "ÜRETİM_C/T"]
+    if df.empty or not all(c in df.columns for c in gerekli):
+        return pd.DataFrame()
+    u = df[df["Durum"] == "Üretim"].dropna(subset=["KOD & OPE.", "Sure_Saat"])
+    if u.empty:
+        return pd.DataFrame()
+
+    grup = u.groupby("KOD & OPE.").agg(
+        Onerilen_CT_Saat=("Sure_Saat", "median"),
+        Islem_Sayisi=("Sure_Saat", "size"),
+        Katalog_CT_Saat=("ÜRETİM_C/T", "median"),
+    ).reset_index()
+    grup = grup[grup["Islem_Sayisi"] >= EMSAL_MIN_TEKRAR].copy()
+    if grup.empty:
+        return pd.DataFrame()
+
+    grup["Fark_Yuzde"] = np.where(
+        grup["Katalog_CT_Saat"] > 0,
+        (grup["Onerilen_CT_Saat"] - grup["Katalog_CT_Saat"]) / grup["Katalog_CT_Saat"] * 100,
+        np.nan,
+    )
+    grup["Guncelleme_Onerisi"] = grup["Fark_Yuzde"].abs() >= 15
+    grup = _yuvarla(grup, Onerilen_CT_Saat=2, Katalog_CT_Saat=2, Fark_Yuzde=1)
+    return grup.reindex(grup["Fark_Yuzde"].abs().sort_values(ascending=False).index).reset_index(drop=True)
+
+
+def compute_ct_cozum_etkisi(df: pd.DataFrame) -> dict:
+    """compute_onerilen_ct()'nin ÖNERDİĞİ değerleri katalog C/T yerine
+    KULLANSAYDIK sistemsel kayma ne kadar düzelirdi? sorusunu sayısal
+    olarak cevaplar — 'teşhis'ten 'çözümün etkisini ölçmeye' geçiş.
+    negatif_ct_sapma_orani, compute_ct_guvenilirlik()'teki ile AYNI mantıkla
+    ama Onerilen_CT_Saat referans alınarak yeniden hesaplanır. Sağlıklı bir
+    referansta bu oranın ~%50'ye yaklaşması beklenir (yarı hızlı/yarı yavaş)."""
+    onerilen = compute_onerilen_ct(df)
+    if onerilen.empty or not kolon_var(df, "Durum", "KOD & OPE.", "Sure_Saat"):
+        return {"gecerli": False}
+    harita = onerilen.set_index("KOD & OPE.")["Onerilen_CT_Saat"]
+    u = df[df["Durum"] == "Üretim"].dropna(subset=["KOD & OPE.", "Sure_Saat"]).copy()
+    u["Onerilen_CT_Saat"] = u["KOD & OPE."].map(harita)
+    u = u.dropna(subset=["Onerilen_CT_Saat"])
+    if u.empty:
+        return {"gecerli": False}
+    u["Yeni_Sapma_Yuzde"] = (u["Sure_Saat"] - u["Onerilen_CT_Saat"]) / u["Onerilen_CT_Saat"] * 100
+    return {
+        "gecerli": True,
+        "kapsanan_islem_sayisi": int(len(u)),
+        "kapsanan_kod_sayisi": int(onerilen.shape[0]),
+        "yeni_negatif_ct_sapma_orani": round((u["Yeni_Sapma_Yuzde"] < 0).mean() * 100, 1),
+        "yeni_ortalama_sapma": round(u["Yeni_Sapma_Yuzde"].mean(), 1),
+    }
+
+
 def compute_pareto(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or not kolon_var(df, "Durum", "Durus_Kategorisi", "Sure_Saat"):
         return pd.DataFrame()
@@ -646,7 +744,7 @@ def compute_pareto(df: pd.DataFrame) -> pd.DataFrame:
     ozet = d.groupby("Durus_Kategorisi")["Sure_Saat"].agg(Toplam_Saat="sum", Adet="count").reset_index()
     ozet = ozet.sort_values("Toplam_Saat", ascending=False).reset_index(drop=True)
     ozet["Kumulatif_%"] = (ozet["Toplam_Saat"].cumsum() / ozet["Toplam_Saat"].sum() * 100).round(1)
-    return ozet
+    return _yuvarla(ozet, Toplam_Saat=2)
 
 
 def compute_vardiya_yorgunluk(df: pd.DataFrame) -> pd.DataFrame:
@@ -685,6 +783,7 @@ def compute_mtbf_mttr(df: pd.DataFrame) -> pd.DataFrame:
     ozet[["Ariza_Sayisi", "MTTR_Saat", "Toplam_Ariza_Saat"]] = ozet[["Ariza_Sayisi", "MTTR_Saat", "Toplam_Ariza_Saat"]].fillna(0)
     ozet["MTBF_Saat"] = np.where(ozet["Ariza_Sayisi"] > 0, (ozet["Calisir_Sure_Saat"] / ozet["Ariza_Sayisi"]).round(1), np.nan)
     ozet["MTTR_Saat"] = ozet["MTTR_Saat"].round(2)
+    ozet = _yuvarla(ozet, Calisir_Sure_Saat=2, Toplam_Ariza_Saat=2)
     return ozet.sort_values("Ariza_Sayisi", ascending=False).reset_index(drop=True)
 
 
@@ -763,21 +862,78 @@ def compute_zaman_cizelgesi(df: pd.DataFrame) -> pd.DataFrame:
     df["Sure_Tutarsizligi_Saat"] = (
         (df["Bitis_Zaman"] - df["Baslangic_Zaman"]).dt.total_seconds() / 3600 - df["Sure_Saat"]
     ).round(2)
+    # Gösterim amaçlı çıktı: satır bazlı türev kolonlar okunabilir hassasiyete yuvarlanır
+    # (asıl hesaplar bu fonksiyonun çıktısından değil, ham df'den yapılır).
+    df = _yuvarla(df, Sure_Saat=2, Sapma_Saat=2, Sapma_Yuzdesi=1, **{"ÜRETİM_SÜRESİ": 2, "İMALAT YAPILAN SÜRE-1": 2, "SET-UP_SÜRESİ": 2, "YEMEK_MOLA_SÜRESİ": 2, "ÜRETİM_C/T": 2})
 
     return df.sort_values(["TEZGAH", "Baslangic_Zaman"]).reset_index(drop=True)
 
 
+def compute_bosluklar(zaman_df: pd.DataFrame, esik_dakika: float = 1.0) -> pd.DataFrame:
+    """compute_zaman_cizelgesi() çıktısını alır; her TEZGAH için ardışık
+    olaylar arasında KAYIT DIŞI (loglanmamış) boşlukları tespit eder.
+
+    'Her vakti dakikayı bilmeliyiz' gereksinimi: Gantt'ta sadece LOGLANMIŞ
+    olaylar görünür, ama bir tezgah iki kayıt arasında hiçbir şey
+    loglanmadan durmuş/beklemiş olabilir — bu fonksiyon o görünmez
+    boşlukları da bulup "Kayıt Dışı / Bilinmeyen" bir sözde-Durum olarak
+    üretir ki Gantt'a eklenince günün TAMAMI (24 saat) hesaba katılmış olsun.
+
+    esik_dakika: bu süreden kısa boşluklar (yuvarlama farkları) gösterilmez.
+    """
+    if zaman_df.empty or not all(c in zaman_df.columns for c in ["TEZGAH", "Baslangic_Zaman", "Bitis_Zaman"]):
+        return pd.DataFrame()
+
+    satirlar = []
+    for tezgah, grup in zaman_df.sort_values("Baslangic_Zaman").groupby("TEZGAH"):
+        onceki_bitis = None
+        onceki_op = None
+        for _, row in grup.iterrows():
+            if onceki_bitis is not None and row["Baslangic_Zaman"] > onceki_bitis:
+                bosluk_dk = (row["Baslangic_Zaman"] - onceki_bitis).total_seconds() / 60
+                if bosluk_dk >= esik_dakika:
+                    satirlar.append({
+                        "TEZGAH": tezgah,
+                        "Baslangic_Zaman": onceki_bitis,
+                        "Bitis_Zaman": row["Baslangic_Zaman"],
+                        "Durum": "Kayıt Dışı / Bilinmeyen",
+                        "Sure_Saat": round(bosluk_dk / 60, 3),
+                        "Onceki_Operator": onceki_op,
+                        "Sonraki_Operator": row.get("Operator_Kod"),
+                    })
+            onceki_bitis = max(onceki_bitis, row["Bitis_Zaman"]) if onceki_bitis is not None else row["Bitis_Zaman"]
+            onceki_op = row.get("Operator_Kod")
+    return pd.DataFrame(satirlar).pipe(lambda d: _yuvarla(d, Sure_Saat=2) if not d.empty else d)
+
+
 def compute_setup_parca_kirilimi(df: pd.DataFrame) -> pd.DataFrame:
+    """Operatör × Parça bazında set-up süresi/adedi. 'Cihan M92'de 3 kere,
+    toplam 2.5 saat set-up yapmış, ortalama 50 dk' gibi soruları cevaplar.
+
+    NOT (gerçek veriyle bulunan düzeltme): PARÇA NO_ÜRETİM_GİRİLEN boş olan
+    satırlar (gerçek veride 47 Set_Up kaydından 2'si — örn. bir tezgahtan
+    diğerine "DÖNÜŞ" gibi parçasız geçiş kayıtları) eskiden dropna ile
+    SESSİZCE atılıyordu. Artık atılmıyor: parça kodu boşsa, onun yerine
+    "KOD & OPE." metni (varsa) kullanılıyor; o da yoksa "(Parçasız/Diğer)"
+    ile işaretlenip TABLODA GÖRÜNÜR kalıyor — hiçbir setup kaydı kaybolmaz.
+    """
     gerekli = ["Durum", "Operator_Kod", "PARÇA NO_ÜRETİM_GİRİLEN", "Sure_Saat"]
     if df.empty or not all(c in df.columns for c in gerekli):
         return pd.DataFrame()
-    setup = df[df["Durum"] == "Set_Up"].dropna(subset=["PARÇA NO_ÜRETİM_GİRİLEN"])
+    setup = df[df["Durum"] == "Set_Up"].copy()
     if setup.empty:
         return pd.DataFrame()
+
+    parca_kolonu = setup["PARÇA NO_ÜRETİM_GİRİLEN"]
+    if "KOD & OPE." in setup.columns:
+        parca_kolonu = parca_kolonu.fillna(setup["KOD & OPE."])
+    setup["PARÇA NO_ÜRETİM_GİRİLEN"] = parca_kolonu.fillna("(Parçasız/Diğer)")
+
     ozet = setup.groupby(["Operator_Kod", "PARÇA NO_ÜRETİM_GİRİLEN"]).agg(
         Toplam_Setup_Saat=("Sure_Saat", "sum"), Setup_Adet=("Sure_Saat", "count"),
         Ort_Setup_Dakika=("Sure_Saat", lambda s: round(s.mean() * 60, 1)),
     ).reset_index()
+    ozet = _yuvarla(ozet, Toplam_Setup_Saat=2)
     return ozet.sort_values("Toplam_Setup_Saat", ascending=False).reset_index(drop=True)
 
 
@@ -797,6 +953,7 @@ def compute_aylik_ozet(df: pd.DataFrame, boyut: str = "TEZGAH") -> pd.DataFrame:
     ).reset_index()
     planlanan = ozet["Uretim_Saat"] + ozet["Plansiz_Durus_Saat"] + ozet["Rework_Saat"]
     ozet["Kullanilabilirlik_%"] = ((ozet["Uretim_Saat"] + ozet["Rework_Saat"]) / planlanan * 100).where(planlanan > 0, 0).round(1)
+    ozet = _yuvarla(ozet, Uretim_Saat=2, Plansiz_Durus_Saat=2, Set_Up_Saat=2, Rework_Saat=2)
     return ozet.sort_values(["Ay", "Uretim_Saat"], ascending=[True, False]).reset_index(drop=True)
 
 
@@ -810,4 +967,171 @@ def compute_heatmap(df: pd.DataFrame) -> pd.DataFrame:
     piv = d.pivot_table(index=parca_kolonu, columns="TEZGAH", values="Sure_Saat", aggfunc="sum", fill_value=0.0)
     piv["_toplam"] = piv.sum(axis=1)
     piv = piv.sort_values("_toplam", ascending=False).head(20).drop(columns="_toplam")
-    return piv
+    return piv.round(2)
+
+
+# =============================================================================
+# SUNUM ↔ HESAP DOĞRULAMA (Uretim_Verimliligi_Sunumu: 31 Ağustos - 5 Eylül)
+# =============================================================================
+# Aşağıdaki hedef değerler sunumdaki gömülü chart/tablo verilerinden ve
+# kullanıcının paylaştığı ham tezgah tablosundan alınmıştır. Amaç: dashboard'un
+# hesapları sunumla ne kadar örtüşüyor, TEK TEK görebilmek.
+SUNUM_TEZGAH = {
+    # tezgah: (Kullanilabilirlik %, Plansız kayıp saat, Üretim saat (ham tablo))
+    "AB-03": (99.4, 0.8, 117.25), "AB-08": (99.1, 0.7, 81.00), "AB-07": (99.1, 0.9, 98.33),
+    "AB-06": (98.0, 2.5, 125.58), "AB-11": (97.2, 2.7, 95.00), "AB-09": (96.8, 3.5, 105.00),
+    "AB-02": (96.6, 4.3, 123.17), "AB-10": (94.2, 6.2, 102.00),
+}
+SUNUM_TEZGAH_SETUP_SAAT = {  # kullanıcının ham tablosundaki Set_Up_Saat
+    "AB-10": 0.0, "AB-02": 2.0, "AB-09": 0.5, "AB-11": 0.0, "AB-06": 0.0, "AB-07": 5.5, "AB-08": 0.0, "AB-03": 0.0,
+}
+SUNUM_OPERATOR_EMSAL = {  # normalize isim: hedef Emsal sapma %
+    "MEHMET EMRE KARAKAS": 9.7, "MUHAMMED KORKMAZ": 9.6, "ASKIN SAKALLI": 8.0,
+    "HAMZA KARAASLAN": 2.8, "YASAR SENOL": -4.5, "MEHMET ALI COLAK": -14.4,
+    "MESUT ARDIC": -15.1, "NURULLAH ZENGIN": -20.8, "HUSEYIN YENICE": -21.7,
+    "NAZIF GUCLUDAG": -22.2,
+}
+SUNUM_SETUP = [  # (normalize isim, KOD & OPE. ipucu, dakika)
+    ("YASAR SENOL", "M01G03", 135), ("NURULLAH ZENGIN", "M13P02 70", 105),
+    ("MEHMET EMRE KARAKAS", "M92", 90), ("NAZIF GUCLUDAG", "T170045", 60),
+    ("MUHAMMED KORKMAZ", "M01G03", 30), ("CIHAN SARIGUL", "M14P04", 30),
+    ("BERAT TUNC", "60-SETUP", 30),
+]
+SUNUM_SETUP_FABRIKA_ORT_DK = 69
+SUNUM_REWORK = ("NAZIF GUCLUDAG", "AB-07", 2.5)
+SUNUM_VARDIYA = [1.63, 2.96, 2.78, 4.63]
+SUNUM_TOPLAM_KAYIP_SAAT = 21.75
+
+
+def _operator_isim_kod_haritasi() -> dict:
+    """config.OPERATOR_KOD_HARITASI_PATH (isim -> kod) dosyasını okur; yoksa boş."""
+    import json
+    try:
+        yol = getattr(_cfg, "OPERATOR_KOD_HARITASI_PATH", None)
+        if yol is not None and Path(yol).exists():
+            with open(yol, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    for aday in ["data/operator_kod_haritasi.json", "operator_kod_haritasi.json"]:
+        if Path(aday).exists():
+            import json as _j
+            with open(aday, "r", encoding="utf-8") as f:
+                return _j.load(f)
+    return {}
+
+
+def _durum_isareti(fark, tolerans):
+    if fark is None or pd.isna(fark):
+        return "❓"
+    return "✅" if abs(fark) <= tolerans else "⚠️"
+
+
+def sunum_karsilastirma(df_tum: pd.DataFrame, bas: str = "2026-08-31", bit: str = "2026-09-05") -> dict:
+    """Sunumdaki her sayıyı, aynı tarih penceresi için canlı hesapla karşılaştırır.
+    Döner: {'tezgah','operator','setup','rework','vardiya','ozet'} DataFrame'leri
+    (+ 'pencere_satir'). Emsal referansı TÜM veridir (sunumla aynı metodoloji)."""
+    sonuc: dict = {}
+    if df_tum.empty or "TARİH" not in df_tum.columns:
+        return sonuc
+    hafta = df_tum[(df_tum["TARİH"] >= pd.Timestamp(bas)) & (df_tum["TARİH"] <= pd.Timestamp(bit))].copy()
+    sonuc["pencere_satir"] = len(hafta)
+    if hafta.empty:
+        return sonuc
+    harita = _operator_isim_kod_haritasi()
+
+    # ---- 1) TEZGAH ----
+    t = compute_tezgah_oee(hafta).set_index("TEZGAH")
+    satirlar = []
+    for tezgah, (h_kul, h_plan, h_uretim) in SUNUM_TEZGAH.items():
+        if tezgah not in t.index:
+            satirlar.append({"Tezgah": tezgah, "Not": "Pencerede yok"})
+            continue
+        r = t.loc[tezgah]
+        b_kul = round(float(r["Kullanilabilirlik"]) * 100, 2)
+        satirlar.append({
+            "Tezgah": tezgah,
+            "Kullanılabilirlik % (sunum)": h_kul, "Kullanılabilirlik % (bizim)": b_kul,
+            "Fark (puan)": round(b_kul - h_kul, 2), "Durum KUL": _durum_isareti(b_kul - h_kul, 0.6),
+            "Plansız kayıp sa (sunum)": h_plan, "Plansız kayıp sa (bizim)": round(float(r["Plansiz_Durus_Saat"]), 2),
+            "Fark (sa)": round(float(r["Plansiz_Durus_Saat"]) - h_plan, 2),
+            "Durum PLN": _durum_isareti(float(r["Plansiz_Durus_Saat"]) - h_plan, 0.8),
+            "Üretim sa (ham tablo)": h_uretim, "Üretim sa (bizim)": round(float(r["Uretim_Saat"]), 2),
+            "Fark Üretim (sa)": round(float(r["Uretim_Saat"]) - h_uretim, 2),
+            "Set-up sa (ham tablo)": SUNUM_TEZGAH_SETUP_SAAT.get(tezgah),
+            "Set-up sa (bizim)": round(float(r["Set_Up_Saat"]), 2),
+            "Fark Set-up (sa)": round(float(r["Set_Up_Saat"]) - SUNUM_TEZGAH_SETUP_SAAT.get(tezgah, 0), 2),
+        })
+    sonuc["tezgah"] = pd.DataFrame(satirlar)
+    sonuc["toplam_kayip_bizim"] = round(float(t["Plansiz_Durus_Saat"].sum() + t["Rework_Saat"].sum()), 2)
+
+    # ---- 2) OPERATÖR (emsal referansı = tüm veri) ----
+    k = compute_operator_karne(hafta, emsal_referans_df=df_tum)
+    satirlar = []
+    for isim, h in SUNUM_OPERATOR_EMSAL.items():
+        kod = harita.get(isim)
+        b = None
+        if kod is not None and not k.empty and kod in set(k["Operator_Kod"]):
+            b = float(k.loc[k["Operator_Kod"] == kod, "Emsal_Bazli_Sapma_Yuzde"].iloc[0])
+        satirlar.append({
+            "Operatör (isim)": isim, "Kod": kod, "Emsal sapma % (sunum)": h,
+            "Emsal sapma % (bizim)": None if b is None else round(b, 1),
+            "Fark (puan)": None if b is None else round(b - h, 1),
+            "Durum": _durum_isareti(None if b is None else b - h, 2.0),
+        })
+    op_df = pd.DataFrame(satirlar)
+    if op_df["Emsal sapma % (bizim)"].notna().sum() >= 3:
+        op_df["Sıra (sunum)"] = op_df["Emsal sapma % (sunum)"].rank(ascending=False).astype(int)
+        op_df["Sıra (bizim)"] = op_df["Emsal sapma % (bizim)"].rank(ascending=False, na_option="bottom").astype(int)
+    sonuc["operator"] = op_df
+
+    # ---- 3) SETUP ----
+    su = hafta[hafta["Durum"] == "Set_Up"].copy()
+    su["dk"] = (su["Sure_Saat"] * 60).round(0)
+    tum_su = df_tum[df_tum["Durum"] == "Set_Up"].copy()
+    tum_su["dk"] = (tum_su["Sure_Saat"] * 60).round(0)
+    satirlar = []
+    for isim, ipucu, dk in SUNUM_SETUP:
+        kod = harita.get(isim)
+        aday = su[(su["Operator_Kod"] == kod) & ((su["dk"] - dk).abs() <= 1)] if kod else su.iloc[0:0]
+        if not aday.empty:
+            a = aday.iloc[0]
+            satirlar.append({"Operatör": isim, "Sunum dk": dk, "Bizim dk": float(a["dk"]), "Tarih": a["TARİH"].date(),
+                             "Tezgah": a["TEZGAH"], "KOD & OPE.": a["KOD & OPE."], "Durum": "✅ Pencerede bulundu"})
+        else:
+            dis = tum_su[(tum_su["Operator_Kod"] == kod) & ((tum_su["dk"] - dk).abs() <= 1)] if kod else tum_su.iloc[0:0]
+            if not dis.empty:
+                a = dis.iloc[0]
+                satirlar.append({"Operatör": isim, "Sunum dk": dk, "Bizim dk": float(a["dk"]), "Tarih": a["TARİH"].date(),
+                                 "Tezgah": a["TEZGAH"], "KOD & OPE.": a["KOD & OPE."],
+                                 "Durum": "⚠️ Aynı kayıt var ama pencere DIŞINDA"})
+            else:
+                satirlar.append({"Operatör": isim, "Sunum dk": dk, "Bizim dk": None, "Tarih": None,
+                                 "Tezgah": None, "KOD & OPE.": None, "Durum": "❌ Hiç bulunamadı"})
+    sonuc["setup"] = pd.DataFrame(satirlar)
+    sonuc["setup_ort_bizim_dk"] = round(float(su["dk"].mean()), 1) if not su.empty else None
+    sonuc["setup_adet_bizim"] = int(len(su))
+
+    # ---- 4) REWORK ----
+    rw = hafta[hafta["Durum"] == "Rework"]
+    if rw.empty:
+        sonuc["rework"] = pd.DataFrame()
+    else:
+        g = rw.groupby(["Operator_Kod", "TEZGAH"])["Sure_Saat"].agg(Saat="sum", Adet="count").reset_index()
+        g["Saat"] = g["Saat"].round(2)
+        ters = {v: k for k, v in harita.items()}
+        g.insert(0, "Operatör (isim)", g["Operator_Kod"].map(ters))
+        sonuc["rework"] = g
+
+    # ---- 5) VARDİYA YORGUNLUK (pencere + tam dönem) ----
+    v_pen = compute_vardiya_yorgunluk(hafta)
+    v_tum = compute_vardiya_yorgunluk(df_tum)
+    satirlar = []
+    for i, h in enumerate(SUNUM_VARDIYA):
+        satirlar.append({
+            "Dilim": f"{i + 1}. Çeyrek", "Sunum %": h,
+            "Bizim % (pencere)": float(v_pen["Hata_Orani_%"].iloc[i]) if len(v_pen) > i else None,
+            "Bizim % (tam dönem)": float(v_tum["Hata_Orani_%"].iloc[i]) if len(v_tum) > i else None,
+        })
+    sonuc["vardiya"] = pd.DataFrame(satirlar)
+    return sonuc

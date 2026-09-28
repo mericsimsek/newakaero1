@@ -17,7 +17,7 @@ import plotly.express as px
 import streamlit as st
 
 from common import (
-    RENK, veri_yukle_ve_filtrele, compute_zaman_cizelgesi, metrik_aciklamasi,
+    RENK, veri_yukle_ve_filtrele, compute_zaman_cizelgesi, compute_bosluklar, metrik_aciklamasi,
 )
 
 st.set_page_config(page_title="Zaman Çizelgesi", layout="wide", page_icon="🕐")
@@ -93,22 +93,44 @@ with st.expander("ℹ️ Bu saatler nasıl hesaplanıyor? (yöntem — gerçek v
         "gizlenmiyor."
     )
 
+# ---------------------------------------------------------------- KAYIT DIŞI BOŞLUKLAR
+bosluk_df = compute_bosluklar(zaman_df)
+gantt_kaynak = zaman_df
+if not bosluk_df.empty:
+    gantt_kaynak = pd.concat([zaman_df, bosluk_df], ignore_index=True)
+
 # ---------------------------------------------------------------- GANTT
-hover_kolonlar = {c: True for c in ["Operator_Kod", "Durus_Kategorisi", "Durus_Sebebi_Ham", "KOD & OPE.", "Sure_Saat"] if c in zaman_df.columns}
+hover_kolonlar = {c: True for c in ["Operator_Kod", "Durus_Kategorisi", "Durus_Sebebi_Ham", "KOD & OPE.", "Sure_Saat"] if c in gantt_kaynak.columns}
 fig = px.timeline(
-    zaman_df, x_start="Baslangic_Zaman", x_end="Bitis_Zaman", y="TEZGAH", color="Durum",
+    gantt_kaynak, x_start="Baslangic_Zaman", x_end="Bitis_Zaman", y="TEZGAH", color="Durum",
     color_discrete_map=RENK, hover_data=hover_kolonlar,
     title=f"{secilen_gun} — {'Tüm Tezgahlar' if not secilen_tezgah else secilen_tezgah}",
 )
 fig.update_yaxes(autorange="reversed")
-fig.update_layout(height=max(300, 60 * zaman_df["TEZGAH"].nunique()))
+fig.update_layout(height=max(300, 60 * gantt_kaynak["TEZGAH"].nunique()))
 st.plotly_chart(fig, use_container_width=True)
 
 st.markdown(
     "**Nasıl okunur?** Her renkli blok bir olayı temsil eder. Üzerine gelince "
     "operatör, duruş kategorisi/sebebi, işlenen parça/operasyon kodu ve süre görünür. "
-    "Renk kodları: 🟢 Üretim · 🔴 Plansız Duruş · 🟡 Set-up · 🟤 Yemek/Mola · 🟠 Rework."
+    "Renk kodları: 🟢 Üretim · 🔴 Plansız Duruş · 🟡 Set-up · 🟤 Yemek/Mola · 🟠 Rework · "
+    "⚪ **Kayıt Dışı/Bilinmeyen** (hiçbir olayın loglanmadığı, tezgahın ne yaptığı bilinmeyen boşluk)."
 )
+
+if not bosluk_df.empty:
+    with st.expander(f"🕳️ Kayıt Dışı Boşluklar — {len(bosluk_df)} boşluk, toplam {bosluk_df['Sure_Saat'].sum():.1f} saat", expanded=False):
+        st.caption(
+            "Bu aralıklarda tezgah için HİÇBİR olay (üretim/duruş/setup/yemek/rework) "
+            "loglanmamış — tezgah durmuş, kapalı, ya da veri girişi eksik olabilir. "
+            "'Her dakikayı bilmek' için bu boşluklar da hesaba katılmalıdır."
+        )
+        bosluk_goster = bosluk_df.copy()
+        bosluk_goster["Sure_Dakika"] = (bosluk_goster["Sure_Saat"] * 60).round(0)
+        st.dataframe(
+            bosluk_goster[["TEZGAH", "Baslangic_Zaman", "Bitis_Zaman", "Sure_Saat", "Sure_Dakika", "Onceki_Operator", "Sonraki_Operator"]]
+            .sort_values("Sure_Saat", ascending=False),
+            use_container_width=True, hide_index=True,
+        )
 
 st.markdown("---")
 
@@ -125,8 +147,9 @@ for tezgah in sorted(zaman_df["TEZGAH"].unique()):
     toplam_saat = tg["Sure_Saat"].sum()
     durus_sayisi = len(tg[tg["Durum"] == "Plansız_Duruş"])
     calisan_operatorler = ", ".join(sorted(tg["Operator_Kod"].dropna().unique())) if "Operator_Kod" in tg.columns else "-"
+    tg_bosluk_saat = bosluk_df.loc[bosluk_df["TEZGAH"] == tezgah, "Sure_Saat"].sum() if not bosluk_df.empty else 0.0
 
-    with st.expander(f"🏭 **{tezgah}** — Üretim {uretim_saat:.1f}sa · Duruş {durus_saat:.1f}sa · {durus_sayisi} duruş", expanded=(secilen_tezgah is not None)):
+    with st.expander(f"🏭 **{tezgah}** — Üretim {uretim_saat:.1f}sa · Duruş {durus_saat:.1f}sa · {durus_sayisi} duruş" + (f" · 🕳️ {tg_bosluk_saat:.1f}sa kayıt dışı" if tg_bosluk_saat > 0 else ""), expanded=(secilen_tezgah is not None)):
         cc1, cc2, cc3, cc4 = st.columns(4)
         calisma_orani = (uretim_saat / toplam_saat * 100) if toplam_saat > 0 else 0
         cc1.metric("Çalışma Oranı", f"%{calisma_orani:.1f}")
@@ -140,7 +163,8 @@ for tezgah in sorted(zaman_df["TEZGAH"].unique()):
         st.caption(
             f"⏱️ Süre dağılımı: Üretim {uretim_saat:.2f}sa · Plansız Duruş {durus_saat:.2f}sa · "
             f"Set-up {setup_saat:.2f}sa · Yemek/Mola {yemek_saat:.2f}sa · Rework {rework_saat:.2f}sa "
-            f"(Toplam: {toplam_saat:.2f}sa)"
+            f"(Loglanmış toplam: {toplam_saat:.2f}sa"
+            + (f" · 🕳️ Kayıt Dışı: {tg_bosluk_saat:.2f}sa · **Gün Toplamı: {toplam_saat+tg_bosluk_saat:.2f}sa**)" if tg_bosluk_saat > 0 else ")")
         )
 
         if durus_sayisi > 0 and "Durus_Kategorisi" in tg.columns:
@@ -167,6 +191,10 @@ gosterilecek = [c for c in [
 
 tablo = zaman_df[gosterilecek].sort_values(["TEZGAH", "Baslangic_Zaman"]).copy()
 tablo["Sure_Dakika"] = (tablo["Sure_Saat"] * 60).round(1)
+tablo["Baslangic_Zaman"] = tablo["Baslangic_Zaman"].dt.strftime("%Y-%m-%d %H:%M:%S")
+tablo["Bitis_Zaman"] = tablo["Bitis_Zaman"].dt.strftime("%Y-%m-%d %H:%M:%S")
+if "ÜRETİM_C/T" in tablo.columns:
+    tablo["ÜRETİM_C/T"] = tablo["ÜRETİM_C/T"].round(2)
 
 def _tutarsizlik_vurgula(val):
     if pd.isna(val) or abs(val) < 0.01:

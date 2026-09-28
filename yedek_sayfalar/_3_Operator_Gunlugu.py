@@ -104,6 +104,12 @@ gosterilecek = [c for c in [
 
 tablo = gunluk_sirali[gosterilecek].copy()
 tablo["Sure_Dakika"] = (tablo["Sure_Saat"] * 60).round(1)
+for _k in ["Baslangic_Zaman", "Bitis_Zaman"]:
+    if _k in tablo.columns:
+        tablo[_k] = tablo[_k].dt.strftime("%Y-%m-%d %H:%M:%S")
+for _k, _n in [("Sure_Saat", 2), ("ÜRETİM_C/T", 2), ("Sapma_Yuzdesi", 1)]:
+    if _k in tablo.columns:
+        tablo[_k] = tablo[_k].round(_n)
 
 st.dataframe(tablo, use_container_width=True, hide_index=True, height=min(600, 40 + 35 * len(tablo)))
 

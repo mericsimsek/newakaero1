@@ -775,7 +775,6 @@ def compute_aylik_ozet(df: pd.DataFrame, boyut: str = "TEZGAH") -> pd.DataFrame:
     ozet["Kullanilabilirlik_%"] = ((ozet["Uretim_Saat"] + ozet["Rework_Saat"]) / planlanan * 100).where(planlanan > 0, 0).round(1)
     return ozet.sort_values(["Ay", "Uretim_Saat"], ascending=[True, False]).reset_index(drop=True)
 
-
 # ---------------------------------------------------------------------------
 # OPERATÖR KARNESİ
 # ---------------------------------------------------------------------------
