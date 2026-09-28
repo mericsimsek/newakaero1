@@ -209,7 +209,7 @@ with sekmeler[3]:
         df_krono = df_krono.sort_values("Baslangic_Zaman")
     else:
         df_krono = df_krono.sort_values(["TARİH", "BAŞLANGIÇ_SAAT"])
-    if "TARİH" in df_krono.columns:
+    if "TARİH" in df_krono.columns: 
         df_krono["TARİH"] = pd.to_datetime(df_krono["TARİH"]).dt.date
         
     krono_sutunlar = {
