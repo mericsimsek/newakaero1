@@ -1,1 +1,33 @@
 Şişirilmiş Katalog Hedefi: Excel tablosuna baktığımızda M14P04 10 kodlu parçanın ÜRETİM C/T (Katalog Hedefi) kolonunda istisnasız 10,00 saat yazdığını görüyoruz. Mühendislik departmanı bu iş için 10 saat biçmiş.   Sahadaki Gerçeklik: Hemen sağındaki gerçekleşen sürelere (SÜRE SAAT-1 / İMALAT YAPILAN SÜRE-1) bakıyoruz: Ustalar bu işi 4,25 saat, 5,25 saat, 2,50 saat, 3,00 saat gibi sürelerde bitirmişler. Ortalaması yaklaşık 3-4 saat civarında dolaşıyor. 10 saat süren tek bir kayıt bile yok.   Sistemin Yanılgısı: Eğer yazdığımız dashboard eski usul ÜRETİM C/T hedefini baz alsaydı, bu parçayı 3 saatte işleyen adamı "Hedefi 10 saatti, 3 saatte bitirdi, demek ki %70 oranında daha hızlı süper kahraman!" diye raporlayacaktı.Emsal Sapmasının Çözümü: Bizim yazdığımız Emsal Sapması algoritması ise 10 saatlik o sahte C/T değerini çöpe atıyor. Sisteme diyor ki: "Kataloğu boşver, fabrikadaki diğer ustalar bu M14P04 10 parçasını ortalama kaç saatte işliyor? 4 saatte. O zaman 4 saati baz al. Eğer operatör 3 saatte bitirdiyse onu ortalamadan hızlı (yeşil), 6 saatte bitirdiyse ortalamadan yavaş (kırmızı) olarak işaretle."
+
+
+bi seri nosunu 2 kişi işleyebiliyor ardarda gelebiliyo sapmayı ona göre ayarla
+sapma 
+
+mehmet 7.5 saat çalıştı fabrikada mesaisinde  7 saatlik parça yaptı  ona göre bak 
+mehmet ayda 300 saatlik para veriliyor 200 saat çalıştı para geliyo ee 100 saat kayıp nerde kötü onu bulmamız lazım dedi
+
+ü + / ü + plan + rework = oee
+
+Sen kıdemli bir Veri Mühendisisin. `etl.py` ve (gerekirse) `common.py` dosyalarımızda çok kritik bir üretim hesaplaması hatasını (Split Operation Fallacy) düzeltmeni istiyorum.
+
+SORUN:
+Şu anda `Sapma_Saat` ve `Sapma_Yuzdesi` hesaplanırken (özellikle `etl.py` içindeki temizlik aşamasında), her satır (df["Sure_Saat"] - df["ÜRETİM_C/T"]) formülüyle kendi içinde değerlendiriliyor. Ancak gerçek fabrikada BİR FİZİKSEL PARÇAYI (S/N) gece vardiyasında A kişisi işlemeye başlıyor, gündüz vardiyasında B kişisi bitiriyor. Satır bazlı hesaplama, katalog hedefini her satır için ayrı ayrı işleme soktuğu için operatör hızlarını şişiriyor ve C/T sapmalarını tamamen yanlış çıkarıyor.
+
+ÇÖZÜM GÖREVİ:
+Veritabanına yazılmadan önce (tercihen `etl.py` içindeki DataFrame manipülasyonu sırasında veya `common.py` içindeki ilgili hesaplamalarda) "S/N" (Seri No) kolonunu baz alan bir Oransal Sapma (Proportional Deviation) algoritması yazmalısın.
+
+YAZACAĞIN MANTIK (Pandas):
+1. Veri setinde "S/N" kolonu varsa ve boş değilse; veriyi `["S/N", "KOD & OPE."]` bazında grupla.
+2. Bu grup için o fiziksel parçaya harcanan toplam süreyi bul (`grup_toplam_sure`).
+3. Grubun sahip olduğu `ÜRETİM_C/T` hedefini al (gruptaki tüm satırlarda aynıdır).
+4. Toplam Sapma = `grup_toplam_sure` - `ÜRETİM_C/T`
+5. Satırın Ağırlığı (Oranı) = `satir_suresi` / `grup_toplam_sure`
+6. Satırın Yeni Sapma Saati = `Toplam Sapma` * `Satırın Ağırlığı`
+7. Satırın Yeni Sapma Yüzdesi = ( `Satırın Yeni Sapma Saati` / (`ÜRETİM_C/T` * `Satırın Ağırlığı`) ) * 100
+8. EĞER bir satırda "S/N" boşsa (NaN) veya veri setinde "S/N" kolonu hiç yoksa, o satırlar için eski klasik yöntemi (`Sure_Saat` - `ÜRETİM_C/T`) uygulamaya (fallback) devam et.
+
+ÖNEMLİ KURALLAR:
+- Bu işlemi sadece `Durum == "Üretim"` olan ve `ÜRETİM_C/T > 0` olan satırlara uygula. Diğer duruş/setup satırlarının sapması NaN kalmalı.
+- Orijinal kolon isimlerini (`Sapma_Saat`, `Sapma_Yuzdesi`) koru ki dashboard tarafındaki `app.py` / `app4.py` grafikleri bozulmasın.
+- Sadece mevcut hesaplama bloğunu güncelle, dosyaların geri kalan yapısını bozma.

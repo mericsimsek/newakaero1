@@ -93,18 +93,18 @@ with sekmeler[0]:
             st.plotly_chart(fig_pie, use_container_width=True)
 
         # 2. Tezgah Başına Gerçek OEE (Büyük Yatay Bar Grafik)
-        with c2:
-            if "Gerçek OEE (%)" in tezgah_ozet_gosterim.columns:
-                tezgah_sirali = tezgah_ozet_gosterim.sort_values("Gerçek OEE (%)", ascending=True)
-                max_x = max(100, tezgah_sirali["Gerçek OEE (%)"].max() + 10) # 150 ise grafiği 160'a kadar uzatır
-                fig_oee = px.bar(tezgah_sirali, x="Gerçek OEE (%)", y="TEZGAH", orientation="h",
-                                 title="Tezgah OEE Skorları (Hedef: %85)", 
-                                 text_auto='.1f', color="Gerçek OEE (%)", 
-                                 color_continuous_scale="RdYlGn", range_color=[50, 100], height=450)
+       # with c2:
+       #     if "Gerçek OEE (%)" in tezgah_ozet_gosterim.columns:
+       #         tezgah_sirali = tezgah_ozet_gosterim.sort_values("Gerçek OEE (%)", ascending=True)
+        #        max_x = max(100, tezgah_sirali["Gerçek OEE (%)"].max() + 10) # 150 ise grafiği 160'a kadar uzatır
+        #        fig_oee = px.bar(tezgah_sirali, x="Gerçek OEE (%)", y="TEZGAH", orientation="h",
+        #                         title="Tezgah OEE Skorları (Hedef: %85)", 
+         #                        text_auto='.1f', color="Gerçek OEE (%)", 
+         #                        color_continuous_scale="RdYlGn", range_color=[50, 100], height=450)
                 
-                fig_oee.add_vline(x=85, line_dash="dash", line_color="red", annotation_text="Dünya Standardı (%85) ", annotation_font_size=12)
-                fig_oee.update_layout(xaxis_title="OEE Skoru (%)", yaxis_title="Tezgahlar", xaxis=dict(range=[0, max_x]), font=dict(size=14))
-                st.plotly_chart(fig_oee, use_container_width=True)
+         #       fig_oee.add_vline(x=85, line_dash="dash", line_color="red", annotation_text="Dünya Standardı (%85) ", annotation_font_size=12)
+         #       fig_oee.update_layout(xaxis_title="OEE Skoru (%)", yaxis_title="Tezgahlar", xaxis=dict(range=[0, max_x]), font=dict(size=14))
+          #      st.plotly_chart(fig_oee, use_container_width=True)
 
         st.markdown("##### Tezgah Başına Detaylı Tablo")
         st.dataframe(tezgah_ozet_gosterim, use_container_width=True, hide_index=True)
@@ -227,24 +227,23 @@ with sekmeler[3]:
 
 
 # --- SEKME 5: CT GÜVENİLİRLİK ---
-with sekmeler[4]:
-    st.subheader("⚠️ Katalog C/T (Cycle Time) Analizi ve Kanıtlar")
-    ct = compute_ct_guvenilirlik(df)
-    if not ct.get("gecerli"):
-        st.info("Bu filtrede CT güvenilirlik analizi için yeterli veri yok.")
-    else:
-        c1, c2 = st.columns(2)
-        c1.metric("Sistemsel Kayma Puanı (Negatif = Gevşek Hedef)", f"{ct['sistemsel_kayma_puan']:+.1f}" if ct['sistemsel_kayma_puan'] is not None else "—")
-        c2.metric("CT'den Hızlı Görünen Operatör Oranı", f"%{ct['negatif_ct_sapma_orani']:.1f}" if ct['negatif_ct_sapma_orani'] is not None else "—")
-        st.warning("🚨 **Mevcut üretim kataloglarındaki hedef süreler (C/T) güncel değildir.** Operatörlerimizin neredeyse tamamı hedeflerden hızlı görünmektedir. Bu durum operatör hızından ziyade, kağıt üzerindeki hedeflerin gevşekliğini kanıtlar.")
-        st.markdown("---")
-        st.subheader("✅ Veri Odaklı Çözüm: Önerilen C/T")
-        st.info("Aşağıdaki tablo, hatalı katalog süreleri yerine; ustalarımızın **fiili üretim medyanlarına** göre algoritmamız tarafından hesaplanmış **GERÇEKÇİ** hedef süreleridir. Bu tablodaki öneriler dikkate alınarak kataloglar güncellenmelidir.")
-        onerilen = compute_onerilen_ct(df)
-        if not onerilen.empty:
-            gosterilecek_oneriler = onerilen[onerilen["Guncelleme_Onerisi"]] if "Guncelleme_Onerisi" in onerilen.columns else onerilen
-            st.dataframe(gosterilecek_oneriler, use_container_width=True, hide_index=True)
-
+#with sekmeler[4]:
+#    st.subheader("⚠️ Katalog C/T (Cycle Time) Analizi ve Kanıtlar")
+  #  ct = compute_ct_guvenilirlik(df)
+  #  if not ct.get("gecerli"):
+   #     st.info("Bu filtrede CT güvenilirlik analizi için yeterli veri yok.")
+   # else:
+   #     c1, c2 = st.columns(2)
+    #    c1.metric("Sistemsel Kayma Puanı (Negatif = Gevşek Hedef)", f"{ct['sistemsel_kayma_puan']:+.1f}" if ct['sistemsel_kayma_puan'] is not None else "—")
+     #   c2.metric("CT'den Hızlı Görünen Operatör Oranı", f"%{ct['negatif_ct_sapma_orani']:.1f}" if ct['negatif_ct_sapma_orani'] is not None else "—")
+     #   st.warning("🚨 **Mevcut üretim kataloglarındaki hedef süreler (C/T) güncel değildir.** Operatörlerimizin neredeyse tamamı hedeflerden hızlı görünmektedir. Bu durum operatör hızından ziyade, kağıt üzerindeki hedeflerin gevşekliğini kanıtlar.")
+     #   st.markdown("---")
+     #   st.subheader("✅ Veri Odaklı Çözüm: Önerilen C/T")
+     #   st.info("Aşağıdaki tablo, hatalı katalog süreleri yerine; ustalarımızın **fiili üretim medyanlarına** göre algoritmamız tarafından hesaplanmış **GERÇEKÇİ** hedef süreleridir. Bu tablodaki öneriler dikkate alınarak kataloglar güncellenmelidir.")
+      #  onerilen = compute_onerilen_ct(df)
+      #  if not onerilen.empty:
+      #      gosterilecek_oneriler = onerilen[onerilen["Guncelleme_Onerisi"]] if "Guncelleme_Onerisi" in onerilen.columns else onerilen
+     #       st.dataframe(gosterilecek_oneriler, use_container_width=True, hide_index=True)/
 
 # --- SEKME 6: METRİKLER VE FORMÜLLER ---
 with sekmeler[5]:
