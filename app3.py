@@ -211,7 +211,7 @@ with sekmeler[3]:
         df_krono = df_krono.sort_values(["TARİH", "BAŞLANGIÇ_SAAT"])
     if "TARİH" in df_krono.columns: 
         df_krono["TARİH"] = pd.to_datetime(df_krono["TARİH"]).dt.date
-        
+    
     krono_sutunlar = {
         "TARİH": "Tarih", "VARDİYA": "Vardiya", "BAŞLANGIÇ_SAAT": "Başlangıç Saati", "BİTİŞ_SAAT": "Bitiş Saati", "TEZGAH": "Tezgah", "Operator_Kod": "Operatör",
         "PARÇA NO_ÜRETİM_GİRİLEN": "Parça No", "OPERASYON_NO": "Operasyon No", "Durum": "Durum", "Durus_Kategorisi": "Duruş Kategorisi", "Durus_Sebebi_Ham": "Duruş Sebebi",

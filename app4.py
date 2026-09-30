@@ -26,6 +26,7 @@ from common import (
     veri_yukle_ve_filtrele, compute_tezgah_oee, compute_operator_karne,
     compute_pareto, compute_vardiya_yorgunluk, compute_mtbf_mttr, compute_heatmap,  # (gizli modüller için)
     compute_ct_guvenilirlik, compute_onerilen_ct, compute_ct_cozum_etkisi, compute_zaman_cizelgesi,
+    compute_operator_kapasite,
     EMSAL_MIN_TEKRAR, CT_DUSUK_GUVEN_ORANI, KARNE_MIN_SAAT, KARNE_MIN_SAAT_GUNLUK,
 )
 
@@ -51,12 +52,13 @@ OEE_REFERANS = 85                # yaygın "dünya standardı" OEE referansı (%
 T_TEZGAH = "📊 Tezgah Özeti"
 T_PARETO = "⏱️ Duruş Pareto ve Analizi"
 T_OPERATOR = "👷 Operatör Karnesi"
+T_KAPASITE = "💰 Kapasite Kaybı (Ödenen vs Loglanmış)"
 T_KRONO = "📅 Kronolojik Üretim Dökümü"
 T_CT = "⚠️ CT Güvenilirlik"
 T_FORMUL = "📐 Metrikler ve Formüller"
 
 SEKMELER = [
-    T_TEZGAH, T_PARETO, T_OPERATOR, T_KRONO, T_CT, T_FORMUL,
+    T_TEZGAH, T_PARETO, T_OPERATOR, T_KAPASITE, T_KRONO, T_CT, T_FORMUL,
     # --- GİZLİ MODÜLLER (FAZ-2): yeniden açmak için aşağıdaki satırı yorumdan çıkarın ---
     # "🌡️ Parça-Tezgah Isı Haritası",
     # "🌙 Vardiya Yorgunluk",
@@ -450,6 +452,61 @@ with sekme[T_OPERATOR]:
             uyum = "✅ birebir eşleşiyor" if abs(genel - karnedeki) < 0.06 else "⚠️ fark var"
             st.caption(f"**{secilen_op}** — bu tablodaki tüm işlem satırlarının ortalama emsal sapması: **{genel:+.1f}%** · karnedeki değer: **{karnedeki:+.1f}%** → {uyum}. "
                        f"Her satır için: (gerçek süre − emsal medyan) / emsal medyan × 100.")
+
+# =============================================================================
+# SEKME 3b: KAPASİTE KAYBI (Ödenen vs Loglanmış Saat)
+# =============================================================================
+with sekme[T_KAPASITE]:
+    st.subheader("💰 Operatöre Ödenen Saat, Sistemde Nereye Gidiyor?")
+    st.caption(
+        "Bir operatöre mesaisi boyunca (vardiya süresi kadar) ödeme yapılır. Ama sistemde o operatöre ait "
+        "kayıtlı (Üretim + Duruş + Setup + Yemek + Rework) toplam süre, vardiya süresinden azsa, aradaki fark "
+        "**hiçbir yere loglanmamış zamandır** — nerede olduğu bilinmiyor demektir."
+    )
+    kap = compute_operator_kapasite(df)
+    if kap.empty:
+        st.info("Bu filtrede kapasite analizi için yeterli veri yok (VARDİYA/Vardiya_Uzunluk_Saat gerekli).")
+    else:
+        toplam_odenen, toplam_kayip = float(kap["Odenen_Saat"].sum()), float(kap["Kayip_Saat"].sum())
+        f1, f2, f3, f4 = st.columns(4)
+        f1.metric("Toplam Ödenen (Mesai) Saat", f"{toplam_odenen:,.0f} sa")
+        f2.metric("Toplam Kayıp (Loglanmamış) Saat", f"{toplam_kayip:,.0f} sa", delta=f"%{toplam_kayip / toplam_odenen * 100:.1f} pay" if toplam_odenen > 0 else None, delta_color="inverse")
+        f3.metric("Ortalama Kayıp Oranı", f"%{kap['Kayip_Yuzde'].mean():.1f}")
+        f4.metric("En Yüksek Kayıp", f"{kap.iloc[0]['Operatör'] if 'Operatör' in kap.columns else kap.iloc[0]['Operator_Kod']}", delta=f"{kap.iloc[0]['Kayip_Saat']:.1f} sa (%{kap.iloc[0]['Kayip_Yuzde']:.1f})", delta_color="off")
+
+        en = kap.iloc[0]
+        isim = en["Operatör"] if "Operatör" in kap.columns else en["Operator_Kod"]
+        st.markdown(
+            f"**Örnek okuma ({isim}):** {int(en['Vardiya_Sayisi'])} vardiyada toplam **{en['Odenen_Saat']:.1f} sa** mesai yapmış "
+            f"(ödenen), sistemde **{en['Loglanmis_Saat']:.1f} sa** kayıt var → **{en['Kayip_Saat']:.1f} sa (%{en['Kayip_Yuzde']:.1f})** "
+            f"hiçbir kayda düşmemiş. `Kayip_Saat = Odenen_Saat − Loglanmis_Saat = {en['Odenen_Saat']:.1f} − {en['Loglanmis_Saat']:.1f} = {en['Kayip_Saat']:.1f} sa`."
+        )
+
+        kg2 = kap.rename(columns={
+            "Operator_Kod": "Operatör", "Vardiya_Sayisi": "Vardiya (n)", "Odenen_Saat": "Ödenen (Sa)", "Loglanmis_Saat": "Loglanmış (Sa)",
+            "Uretim_Saat": "Üretim (Sa)", "Plansiz_Durus_Saat": "Plansız Duruş (Sa)", "Set_Up_Saat": "Set-Up (Sa)", "Yemek_Saat": "Yemek (Sa)",
+            "Rework_Saat": "Rework (Sa)", "Kayip_Saat": "Kayıp (Sa)", "Kayip_Yuzde": "Kayıp (%)", "Uretkenlik_Yuzde": "Üretkenlik (%)",
+            "Fazla_Loglanan_Saat": "Fazla Loglanan (Sa) ⚠️",
+        }) if "Operatör" not in kap.columns else kap
+
+        fig_kap = px.bar(kg2.sort_values("Kayıp (Sa)", ascending=True), x="Kayıp (Sa)", y="Operatör", orientation="h",
+                         color="Kayıp (%)", color_continuous_scale="Reds", text_auto=".1f", height=max(420, 28 * len(kg2) + 120),
+                         title="Operatör Bazında Kayıp (Loglanmamış) Saat")
+        fig_kap.update_layout(xaxis_title="Kayıp Saat", yaxis_title="Operatörler", font=dict(size=14))
+        st.plotly_chart(fig_kap, use_container_width=True)
+
+        st.dataframe(kg2, use_container_width=True, hide_index=True, column_config={
+            "Kayıp (%)": st.column_config.NumberColumn(format="%.1f%%"), "Üretkenlik (%)": st.column_config.NumberColumn(format="%.1f%%"),
+            "Ödenen (Sa)": st.column_config.NumberColumn(format="%.2f"), "Loglanmış (Sa)": st.column_config.NumberColumn(format="%.2f"),
+            "Kayıp (Sa)": st.column_config.NumberColumn(format="%.2f")})
+
+        fazla = kg2[kg2["Fazla Loglanan (Sa) ⚠️"] > 0.01] if "Fazla Loglanan (Sa) ⚠️" in kg2.columns else pd.DataFrame()
+        if not fazla.empty:
+            st.warning(f"⚠️ {len(fazla)} operatörde loglanmış süre vardiya süresini AŞIYOR (örtüşen vardiya kaydı ya da veri girişi hatası olabilir) — 'Fazla Loglanan' kolonuna bakın.")
+
+        with st.expander("📖 Bu tablo nasıl hesaplandı? / Günlük detaya in"):
+            st.markdown(metrik_aciklamasi("operator_kapasite_kaybi"))
+            st.caption("Bir operatörün GÜNLÜK/vardiya bazlı kırılımı için 'Operatör Karnesi' sekmesindeki isimle Kronolojik Döküm sekmesinde filtre uygulayın.")
 
 # =============================================================================
 # SEKME 4: KRONOLOJİK ÜRETİM DÖKÜMÜ
