@@ -31,3 +31,20 @@ YAZACAĞIN MANTIK (Pandas):
 - Bu işlemi sadece `Durum == "Üretim"` olan ve `ÜRETİM_C/T > 0` olan satırlara uygula. Diğer duruş/setup satırlarının sapması NaN kalmalı.
 - Orijinal kolon isimlerini (`Sapma_Saat`, `Sapma_Yuzdesi`) koru ki dashboard tarafındaki `app.py` / `app4.py` grafikleri bozulmasın.
 - Sadece mevcut hesaplama bloğunu güncelle, dosyaların geri kalan yapısını bozma.
+
+
+
+"Tekrar / Kalite İlişkili" Duruşu Ne Oluyor?
+Fabrikadaki veri girişi sırasında (Excel'e) operatörler "Duruş Sebebi" kolonuna serbest metinler yazarlar (Örn: "Çıkan parçada çapak vardı taşladım", "Ölçü kaçtı ayar yaptım" vb.). Sistemimiz (ETL süreci), bu metinleri okur ve içinde kalite, fire, ayar, çapak gibi kelimeler geçen plansız duruşları otomatik olarak "Tekrar / Kalite İlişkili" ana kategorisine atar.
+
+Farkı nedir? Rework doğrudan ürünün yeniden işlenmesi için açılmış resmi bir durumken; Tekrar / Kalite İlişkili duruş, makinenin kalite sorunları yüzünden (örneğin ayar tutturamama) yaşadığı boşta bekleme / plansız duruş süresidir.
+
+
+Grafikteki Eşik Değer Neden %85?
+Tezgah OEE grafiğinin üzerine kırmızı kesik bir çizgiyle %85 Hedef koyduk. Bu rastgele bir sayı değildir.
+
+Endüstride "Dünya Klasında Üretim" (World Class Manufacturing - WCM) standardı %85 OEE'dir.
+
+Uluslararası kabul gören mükemmellik seviyesi şuradan gelir: Makine %90 ihtimalle arızasız çalışsın, %95 performansla (hızda) iş yapsın, %99 ihtimalle de hatasız (rework'süz) parça çıkarsın. (0.90 x 0.95 x 0.99 = 0.846 ≈ %85).
+
+Hedefimiz fabrikayı bu dünya standardı olan %85'in üstünde tutmaktır.

@@ -234,15 +234,31 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
         df["Son_Operasyon_mu"] = df["FINISH"].astype(str).str.strip().str.upper().eq("F")
 
     # ---- Üretim C/T referansını doldur + CT sapması ----
+    # ---- Üretim C/T referansını doldur + CT sapması (BÖLÜNMÜŞ İŞ DÜZELTMESİ) ----
     if all(c in df.columns for c in ["ÜRETİM_C/T", "PARÇA NO_ÜRETİM_GİRİLEN", "OPERASYON_NO"]):
         df["ÜRETİM_C/T"] = df["ÜRETİM_C/T"].fillna(
             df.groupby(["PARÇA NO_ÜRETİM_GİRİLEN", "OPERASYON_NO"])["ÜRETİM_C/T"].transform("median")
         )
         uretim_mask = (df["Durum"] == "Üretim") & (df["ÜRETİM_C/T"] > 0)
-        df["Sapma_Saat"] = np.where(uretim_mask, df["Sure_Saat"] - df["ÜRETİM_C/T"], np.nan)
-        df["Sapma_Yuzdesi"] = np.where(
-            uretim_mask, (df["Sapma_Saat"] / df["ÜRETİM_C/T"]) * 100, np.nan
-        )
+        
+        # Eğer S/N (Seri No / İş Emri) kolonu varsa ardışık işleri toplayarak hesapla
+        if "S/N" in df.columns and "KOD & OPE." in df.columns:
+            # S/N ve KOD & OPE.'ye göre grupla ve toplam fiili süreyi bul
+            grup_toplam = df.groupby(["S/N", "KOD & OPE."])["Sure_Saat"].transform("sum")
+            
+            # Bu satırın o parçadaki ağırlığı (yükü) nedir? (Örn: %40'ı ben, %60'ı diğeri yaptı)
+            agirlik = np.where(grup_toplam > 0, df["Sure_Saat"] / grup_toplam, np.nan)
+            
+            # Toplam sapmayı bul ve ağırlığa göre paylaştır
+            toplam_sapma = grup_toplam - df["ÜRETİM_C/T"]
+            df["Sapma_Saat"] = np.where(uretim_mask, toplam_sapma * agirlik, np.nan)
+            
+            # Yüzde sapma (Sapma_Saat / Kendi Ağırlıklı C/T'si) veya tüm parça için ortak yüzde
+            df["Sapma_Yuzdesi"] = np.where(uretim_mask, (toplam_sapma / df["ÜRETİM_C/T"]) * 100, np.nan)
+        else:
+            # S/N yoksa veya eksikse eski ilkel yönteme dön (Fallback)
+            df["Sapma_Saat"] = np.where(uretim_mask, df["Sure_Saat"] - df["ÜRETİM_C/T"], np.nan)
+            df["Sapma_Yuzdesi"] = np.where(uretim_mask, (df["Sapma_Saat"] / df["ÜRETİM_C/T"]) * 100, np.nan)
 
     stats["bitis"] = len(df)
     log.info("Temizlik özeti: %s", stats)
