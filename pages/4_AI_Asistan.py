@@ -7,17 +7,21 @@ sorulduğunda hangi METRİĞİ, hangi FORMÜLÜ, hangi KOLONLARI kullandığın�
 söyler. Bunu sağlamak için METRIC_REGISTRY (common.py) sistem promptuna
 tam olarak enjekte edilir ve modelden HER sayısal iddiada kullandığı
 metriğin adını parantez içinde belirtmesi istenir.
+S/N (Seri No) bazlı üretim takibi (adet, hafta, setup) prompta entegredir.
 """
 from __future__ import annotations
 
+import os
 import pandas as pd
 import streamlit as st
+from dotenv import load_dotenv
 
+from sn_izleme import sn_ai_baglami, SN_AI_KURALI
 from common import (
     METRIC_REGISTRY, metrik_aciklamasi, veri_yukle_ve_filtrele,
     compute_tezgah_oee, compute_operator_karne, compute_pareto,
     compute_mtbf_mttr, compute_vardiya_yorgunluk, compute_setup_parca_kirilimi,
-    compute_zaman_cizelgesi, compute_aylik_ozet, compute_onerilen_ct,
+    compute_onerilen_ct,
 )
 
 # ---------------------------------------------------------------- GERÇEK İSİM SÖZLÜĞÜ
@@ -56,10 +60,6 @@ with st.expander("📖 Kullanılan Tüm Metrik ve Formüller Sözlüğü", expan
 st.markdown("---")
 
 # ---------------------------------------------------------------- API AYARLARI
-import os
-
-from dotenv import load_dotenv
-
 try:
     import google.generativeai as genai
 except ImportError:
@@ -101,8 +101,7 @@ if not guncel_modeller:
 model_adi = st.sidebar.selectbox("Google Gemini Modeli", guncel_modeller, index=0)
 
 # =============================================================================
-# BAĞLAM (CONTEXT) OLUŞTURMA — filtrelenmiş veriden özet tablolar + kullanılan
-# metriklerin formülleri bir arada modele gönderilir.
+# BAĞLAM (CONTEXT) OLUŞTURMA
 # =============================================================================
 def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
     parcalar = []
@@ -151,7 +150,7 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
         )
         kullanilan_metrikler.append("onerilen_ct")
 
-    # --- KRİTİK EKLEME: SATIR BAZLI ETL ÇIKTISI (KRONOLOJİK VERİ) ---
+    # --- SATIR BAZLI ETL ÇIKTISI (KRONOLOJİK VERİ) ---
     secilecek_kolonlar = [
         "TARİH", "BAŞLANGIÇ_SAAT", "BİTİŞ_SAAT", "TEZGAH", 
         "KOD & OPE.", "PARÇA NO_ÜRETİM_GİRİLEN", "Durum", 
@@ -165,6 +164,11 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
             kronolojik_veri["Sure_Dakika"] = (kronolojik_veri["Sure_Saat"] * 60).round(0)
         parcalar.append("### TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI (Satır Bazlı Döküm)\n" + kronolojik_veri.to_csv(index=False))
 
+    # --- S/N VE WEEK BAZLI İZLEME TABLOLARI (TABLO 10-13) ---
+    sn_baglami = sn_ai_baglami(df)
+    if sn_baglami:
+        parcalar.append(sn_baglami)
+
     return "\n\n".join(parcalar), sorted(set(kullanilan_metrikler))
 
 
@@ -172,7 +176,7 @@ baglam, kullanilan_metrikler = _baglam_ve_kullanilan_metrikler(df)
 formul_bloklari = "\n\n".join(metrik_aciklamasi(k) for k in kullanilan_metrikler)
 
 SISTEM_PROMPTU = f"""Sen bir fabrikanın üretim verisi asistanısın. Sana verilen özet CSV
-tablolarına, KRONOLOJİK DETAY tablosuna (TABLO 8) ve METRİK SÖZLÜĞÜ'ne dayanarak Türkçe, net ve sayısal cevaplar ver.
+tablolarına, KRONOLOJİK DETAY tablosuna (TABLO 8), S/N İZLEME TABLOLARINA (TABLO 10-13) ve METRİK SÖZLÜĞÜ'ne dayanarak Türkçe, net ve sayısal cevaplar ver.
 
 KURALLAR:
 1. Her sayısal iddianı, hangi TABLO'dan ve hangi METRİK'ten geldiğini belirterek destekle.
@@ -181,6 +185,8 @@ KURALLAR:
 3. Bir duruşu raporlarken Operatör İsmi, Parça, Dakika (Sure_Dakika) ve Sebebini kesinlikle belirt.
 4. Kullanıcı "bunu nasıl hesapladın?", "neden türettin?" veya "hangi formülle buldun?" diye sorarsa, İLGİLİ METRİĞİN TAM FORMÜLÜNÜ VE MANTIĞINI METRİK SÖZLÜĞÜ'nden birebir alıntıla.
 5. Veride olmayan bir şeyi UYDURMA. Emin değilsen açıkça "bu veriyle hesaplanamıyor" de.
+6. Kullanıcıya liste veya döküm verirken "0 dakika" olan normal boşlukları veya sorunsuz standart kayıtları ASLA tek tek yazma. Sadece dikkat çekici anormallikleri (15 dakika, 30 dakikalık boşluklar, kırmızı alarmlar, sapmalar) listele. Cevaplarını her zaman kısa, net ve yöneticiye sunulacak özet formatında tut.
+{SN_AI_KURALI}
 
 --- METRİK SÖZLÜĞÜ (bu sohbette kullanılan tablolarla ilgili formüller) ---
 {formul_bloklari}
@@ -200,8 +206,8 @@ ornek_sorular = [
     "Bu hafta en çok hangi tezgah durdu ve niye?",
     "AB-07'nin kullanılabilirliğini nasıl hesapladın?",
     "Hangi operatör emsallerine göre en yavaş?",
-    "MTBF'i hangi formülle buldun?",
-    "1-9 Ağustos arası duruş özeti ver."
+    "2547M01G03 parçasından 32. hafta kaç adet ürettik?",
+    "M01G03 parçasının S/N bazlı medyan süresi nedir?"
 ]
 
 st.caption("Örnek sorular: " + " · ".join(f"*{s}*" for s in ornek_sorular))
@@ -233,3 +239,41 @@ if soru:
         st.session_state.sohbet_gecmisi.append({"role": "assistant", "content": cevap})
     except Exception as e:
         st.error(f"AI çağrısı başarısız oldu: {e}")
+
+# =============================================================================
+# PATRONUN İSTEDİĞİ: DİNAMİK TEYİT BUTONU VE HAM VERİ EKRANI
+# =============================================================================
+# =============================================================================
+# YANITI HAM VERİDEN DOĞRULAMA EKRANI (DİNAMİK FİLTRELİ)
+# =============================================================================
+st.markdown("---")
+with st.expander("🔍 Yanıtı Ham Veriden Doğrula"):
+    st.markdown("Yapay zekanın yanıtında geçen tezgahı, operatörü veya S/N numarasını seçerek ilgili satırları anında kontrol edebilirsiniz.")
+    
+    # "Sapma", "Yüzde", "C/T" gibi kafa karıştırıcı kolonları tablodan temizle
+    # S/N kolonunu gösterime dahil et
+    goster_df = df.copy()
+    silinecek_kolonlar = [c for c in goster_df.columns if "Sapma" in c or "Yuzde" in c or "C/T" in c]
+    goster_df = goster_df.drop(columns=silinecek_kolonlar, errors="ignore")
+    
+    # Kullanıcının AI'ın cevabına göre anında filtreleyebilmesi için dinamik kutular
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        sec_tezgah = st.multiselect("Tezgah Seç:", sorted(goster_df["TEZGAH"].dropna().unique()))
+    with c2:
+        sec_op = st.multiselect("Operatör Seç:", sorted(goster_df["Operator_Kod"].dropna().unique()))
+    with c3:
+        hizli_ara = st.text_input("Parça veya S/N Ara:")
+        
+    # Seçimlere göre anlık filtreleme yap
+    if sec_tezgah:
+        goster_df = goster_df[goster_df["TEZGAH"].isin(sec_tezgah)]
+    if sec_op:
+        goster_df = goster_df[goster_df["Operator_Kod"].isin(sec_op)]
+    if hizli_ara:
+        arama_kucuk = hizli_ara.lower()
+        maske = goster_df.astype(str).apply(lambda x: x.str.lower().str.contains(arama_kucuk)).any(axis=1)
+        goster_df = goster_df[maske]
+        
+    st.dataframe(goster_df, use_container_width=True, hide_index=True)
+    st.caption(f"Filtrelenen satır sayısı: {len(goster_df)}")

@@ -98,6 +98,7 @@ CANONICAL_COLUMNS = [
     "ÜRETİM_SÜRESİ", "YEMEK_MOLA_SÜRESİ", "SET-UP_SÜRESİ",
     "Haftanin_Gunu", "Hafta_Sonu",
     "kaynak", "sisteme_kayit_zamani",
+    "S/N"
 ]
 
 # ---------------------------------------------------------------------------
@@ -129,7 +130,7 @@ DURUM_MAP = {"Ü": "Üretim", "D": "Plansız_Duruş", "S": "Set_Up", "Y": "Yemek
 # "KOD & OPE." metninde geçen anahtar kelimelere göre Durum düzeltmesi —
 # bazı satırlar "Ü" (Üretim) olarak işaretlenmiş olsa da metninde aslında
 # setup/rework/yemek/arıza geçebiliyor; bu kurallar bu yanlış etiketlemeyi
-# düzeltir. Liste sırayla uygulanır (regex OR deseni).
+# düzeltir. Liste sırayla uygulanır (regex OR deseni).  
 DURUM_DUZELTME_KURALLARI = [
     ("SETUP|AYAR|DATALAMA", "Set_Up"),
     ("REWORK", "Rework"),

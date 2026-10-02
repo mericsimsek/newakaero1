@@ -48,3 +48,65 @@ Endüstride "Dünya Klasında Üretim" (World Class Manufacturing - WCM) standar
 Uluslararası kabul gören mükemmellik seviyesi şuradan gelir: Makine %90 ihtimalle arızasız çalışsın, %95 performansla (hızda) iş yapsın, %99 ihtimalle de hatasız (rework'süz) parça çıkarsın. (0.90 x 0.95 x 0.99 = 0.846 ≈ %85).
 
 Hedefimiz fabrikayı bu dünya standardı olan %85'in üstünde tutmaktır.
+
+
+
+
+hangi parça kaç adet yapıldı
+
+sn ye göre baz al ardarda
+
+birleşiyo mu 
+
+
+setuplarla birlikte kaç adet parça
+20 parça yapıldı kaç saatte işlendi kim hangi vardiya
+
+imalat formları alınacak
+
+bütün veriler girilmesi ve parça zamanları karşılaştırılacak parça süreleri
+
+kaç saat kim hangi vardiya parça zaman 
+
+01in 60 operasyonuyla başlıcaz 
+2547m01g03 uzun koduyla yazılacak 
+sevil ablaya veri gönderilecek
+
+weeke perşembeden başla 
+duruşlar çıkcak altdallara inilecek
+
+sadece seri numarasında 3,25 olmalı
+aynı seri numarasını toplayacak
+
+
+hangi tezgah kaç dakika işledi 
+
+sorulara göre teyit ettirme durumu olmalı
+
+viik9da hangi tezhag kaç saat çalıştı
+
+
+kırmızı alarm verebilir snye göre
+
+serinumarasına göre kaç parça işlendi parçada noldu kim çalıştı onları tek tek görmemiz gerkek
+01in 60 operasyonuyla başlıcaz 
+2547m01g03 uzun koduyla yazılacak  bu yani
+
+
+Özcan Çelik'in 11 Ağustos tarihindeki '60-SETUP' işleminden hemen sonra, o tezgahta (AB-10) sırasıyla hangi S/N numaralı parçalar işlenmiştir? Setuptan sonra işlenen ilk 3 parçayı sırasıyla yaz."
+
+
+snye göre week 33te hangi tezgah hangi parçayı üretmiş kaç parça üretmiş ortalama kaç dakikada üretmiş
+
+M01G03 60 operasyonunda 2547M01G03 baz alarak toplam kaç adet parça çıkmış çıkma ortalaması nedir ?
+
+week 32de kaç parça üretilmiş hangi parçalar onları getir seri nosuna göre
+
+Özcan Çelik, 11 Ağustos'taki '60-SETUP' işlemini bitirdikten sonra ilk M01G03 üretimini başlatana kadar arada kaç dakika boşluk (Kayıt Dışı Zaman) bırakmış?",
+
+TABLO 8'e kronolojik sırayla bak: AB-10 tezgahında gece vardiyasında (23:00-07:00) bir parçanın bitiş saati ile bir sonraki parçanın başlangıç saati arasında ortalama kaç dakikalık boşluk var? En uzun boşluk saat kaçta olmuş?"
+
+
+ TABLO 8 ve TABLO 10'u kullanarak cevapla: 2G93R seri numaralı parça 3 farklı usta gezmiş. Bir ustadan diğerine geçerken tezgahta hiç işlem görmeden beklediği (ölü) süre toplam kaç saat?
+
+ 2547M01G03 M01G03 60 a göre 33 weekte kaç parça çıkmış ve parçaların çıkış ortalamaları ne sapan operatör var mı

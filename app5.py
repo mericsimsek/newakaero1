@@ -17,7 +17,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-
+from sn_izleme import render_sn_sekmesi
 from common import (
     RENK, DURUM_SIRASI, METRIC_REGISTRY, metrik_aciklamasi, kolon_var,
     veri_yukle_ve_filtrele, compute_tezgah_oee, compute_operator_karne,
@@ -51,10 +51,10 @@ T_PARETO = "⏱ Duruş Pareto ve Analizi"
 T_OPERATOR = "👷 Operatör Karnesi"
 T_KRONO = "📅 Kronolojik Üretim Dökümü"
 T_FORMUL = "📐 Metrikler ve Formüller"
-
+T_SN = "📦 Parça S/N İzleme"
 # T_KAPASITE ve T_CT sekmeleri listeden çıkarıldı (şu anlık devre dışı)
 SEKMELER = [
-    T_TEZGAH, T_PARETO, T_OPERATOR, T_KRONO, T_FORMUL,
+    T_TEZGAH, T_PARETO, T_OPERATOR, T_KRONO, T_FORMUL, T_SN
 ]
 
 KRONO_KOLONLAR = [
@@ -212,7 +212,7 @@ with st.expander("🔎 Veri Kapsamı ve Kalite Kontrolü — rakamlara ne kadar 
         "ilgili vardiyaların Excel'e girilmemiş olması ya da son günün henüz tamamlanmamış olması olası nedenlerdir. "
         "Bu günler üretim/duruş toplamlarını **düşük gösterebilir** — kesin hata değil, kontrol listesidir."
     )
-    if anomali.empty:
+    if anomali.empty:   
         st.success("Seçili kapsamda düşük kapsamlı tezgah-günü yok.")
     else:
         st.dataframe(anomali, use_container_width=True, hide_index=True, height=260)
@@ -523,6 +523,8 @@ with sekme[T_FORMUL]:
           'emsal_medyan = df.groupby("KOD & OPE.")["Sure_Saat"].median()\nEmsal_Sapma = (Sure_Saat - emsal_medyan) / emsal_medyan * 100',
           ["Sure_Saat", "KOD & OPE.", "Durum", "Operator_Kod"], None)
 
+with sekme[T_SN]:
+    render_sn_sekmesi(df)
 # ====================================================================================
 # GEÇİCİ DEVRE DIŞI BIRAKILAN MODÜLLER (Patron talebi üzerine ekrandan kaldırıldı)
 # İleride açmak için 'if False:' kısımlarını 'if True:' yapıp 'SEKMELER' listesine ekleyin.
