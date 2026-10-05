@@ -140,7 +140,9 @@ def sn_hafta_ozeti(ozet: pd.DataFrame, setup: pd.DataFrame) -> pd.DataFrame:
         s = setup.copy()
         s["Hafta"] = hafta_no(s["TARİH"])
         h = h.merge(s.groupby("Hafta")["Sure_Saat"].sum().rename("Setup_Sa").reset_index(), on="Hafta", how="left")
-    h["Setup_Sa"] = h.get("Setup_Sa", 0).fillna(0)
+    if "Setup_Sa" not in h.columns:
+        h["Setup_Sa"] = 0.0
+    h["Setup_Sa"] = h["Setup_Sa"].fillna(0)
     return h.round({"Ort_Sure_Sa": 2, "Medyan_Sure_Sa": 2, "Toplam_Uretim_Sa": 1, "Gunluk_Ort_Adet": 2, "Setup_Sa": 1})
 
 
@@ -212,21 +214,16 @@ def sn_rota(df: pd.DataFrame, parca_kisa: str = "M01G03", op_adi=lambda k: k) ->
     return r.reset_index().sort_values("Ilk_Tarih").round(2).reset_index(drop=True)
 
 
-def parca_duruslari(df: pd.DataFrame, parca_kisa: str = "M01G03", operasyon: str = "60", op_adi=lambda k: k) -> pd.DataFrame:
-    """SADECE BELİRTİLEN OPERASYONDAKİ duruş kayıtlarını sebep metniyle getirir."""
+def parca_duruslari(df: pd.DataFrame, parca_kisa: str = "M01G03", op_adi=lambda k: k) -> pd.DataFrame:
+    """Parçaya yazılmış tüm duruş kayıtları (sebep metniyle). Duruş sebebi ETL'de Durus_Sebebi_Ham,
+    ham Excel'de OPERASYON NO kolonunda durur."""
     c_parca = _kol(df, "PARÇA NO_ÜRETİM_GİRİLEN", "PARÇA NO ÜRETİM GİRİLEN")
     c_op = _kol(df, "OPERASYON_NO", "OPERASYON NO")
     c_kisi = _kol(df, "Operator_Kod", "OPERATÖR")
     c_sebep = _kol(df, "Durus_Sebebi_Ham") or c_op
-    if None in (c_parca, c_kisi, c_sebep, c_op):
+    if None in (c_parca, c_kisi, c_sebep):
         return pd.DataFrame()
-        
-    d = df[
-        df[c_parca].astype(str).str.contains(parca_kisa, na=False) & 
-        df["Durum"].astype(str).str.contains("Duruş") &
-        (df[c_op].astype(str).str.strip() == str(operasyon))
-    ].copy()
-    
+    d = df[df[c_parca].astype(str).str.contains(parca_kisa, na=False) & df["Durum"].astype(str).str.contains("Duruş")].copy()
     if d.empty:
         return pd.DataFrame()
     d["Operator"] = d[c_kisi].map(op_adi).map(ad_norm)
@@ -252,7 +249,7 @@ def sn_tum_analiz(df: pd.DataFrame, parca_kisa: str, operasyon: str, op_adi=lamb
     t["uclar"] = pd.concat([sirali.head(5)[cols].assign(Grup="EN YAVAŞ 5"),
                             sirali.tail(5).iloc[::-1][cols].assign(Grup="EN HIZLI 5")]).reset_index(drop=True)
     t["rota"] = sn_rota(df, parca_kisa, op_adi)
-    t["durus"] = parca_duruslari(df, parca_kisa, operasyon, op_adi)
+    t["durus"] = parca_duruslari(df, parca_kisa, op_adi)
     return t
 
 
@@ -301,12 +298,18 @@ def sn_ai_baglami(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k) -> str:
 
 
 SN_AI_KURALI = (
-    "6. Kullanıcı seri numarası (S/N), adet, parça süresi, kim çalıştı, vardiya, 'week/hafta N', günlük ortalama, set-up, "
+    "6. Kullanıcı seri numarası (S/N), adet, parça süresi, kim çalıştı, vardiya, günlük ortalama, set-up, "
     "operatör/vardiya/tezgah karşılaştırması, parçanın operasyonlar arası yolculuğu (rota) veya o parçadaki duruşları sorarsa "
-    "TABLO 10-20'yi kullan. Adet = S/N sayısı (aynı S/N'nin kayıtları birleşir, 1 adet). Hafta Perşembe'den başlar. "
+    "TABLO 10-20'yi kullan. Adet = S/N sayısıdır (aynı S/N'nin kayıtları birleşir, 1 adet sayılır). Hafta Perşembe'den başlar. "
     "Bölünmüş işte operatör kıyasını Adet_Payi/Esdeger_Ort_Sa ile yap, 'tek başına bitirdiği' işleri ayrıca belirt. "
-    "'En yavaş/en hızlı' sorularında TABLO 20'yi kullan, kendin sıralama yapma. Cevaba S/N, adet, saat, operatör, vardiya yaz; kullanıcı 'Parça S/N İzleme' sekmesinde doğrulayacak. "
-    "Tablolar yalnızca pilot parça/operasyonu kapsar; başka parça sorulursa 'henüz S/N izleme yok' de."
+    "'En yavaş/en hızlı' sorularında TABLO 20'yi kullan, sıralamayı KESİNLİKLE kendin yapma.\n"
+    "7. ÜSLUP KURALI: Asla 'fırlamış', 'bozmuş', 'çakılmış', 'maalesef' gibi duygusal, abartılı veya yorum içeren kelimeler kullanma. "
+    "Verileri tamamen objektif, kurumsal ve istatistiksel bir dille ifade et (Örn: 'artış göstermiştir', 'sapma gözlemlenmiştir'). Kullanıcıya hitap sözcüğü kullanma.\n"
+    "8. DOĞRULAMA İZİ (ZORUNLU): Verdiğin her analitik veya sayısal cevabın en sonuna mutlaka '🔍 DOĞRULAMA İZİ' başlığı altında "
+    "şu 3 maddeyi ekle: 1) Verinin çekildiği Tablo No ve Adı, 2) Kullanılan Formül/Matematiksel Mantık (Örn: Eşdeğer Ort Sa = Toplam_Saat / Adet_Payi), "
+    "3) Ham Veri Dayanağı (Bu verinin puredata1.xlsx içindeki 'Sure_Saat' ve 'S/N' kolonlarının gruplanmasıyla elde edildiğini belirt).\n"
+    "9. MATEMATİK KURALI: Tablolardaki genel toplam, ortalama veya oranları (örneğin aylık ortalama) kendin hesaplamaya çalışma, doğrudan tablodaki hazır değeri oku. Ancak kullanıcı spesifik olarak 'şu 3 parçanın ortalamasını al' gibi basit bir aritmetik işlem isterse, işlemi açıkça göstererek yap (Örn: '3.0 + 2.5 + 3.5 = 9.0 saat, 9.0 / 3 = 3.0 saat'). "
+    "Sadece sana verilen tablolardaki hazır değerleri oku ve ekrana yansıt. Bölme veya toplama işlemi yaparak yeni bir ortalama üretme."
 )
 
 
@@ -352,75 +355,30 @@ def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
         st.dataframe(ozet, use_container_width=True, hide_index=True)
         indir(ozet, "S/N adet tablosu", "sn")
     with sek[2]:
-        # YENİ EKLENEN: Operatöre göre S/N listesini daraltma
-        tum_operatorler = ["Tümü"] + sorted(detay["Operator"].dropna().unique().tolist())
-        secili_op = st.selectbox("Önce Operatör Seç (Opsiyonel):", tum_operatorler, key="op_sec")
-        
-        if secili_op != "Tümü":
-            uygun_snler = detay[detay["Operator"] == secili_op]["S/N"].unique().tolist()
-        else:
-            uygun_snler = ozet["S/N"].tolist()
-            
-        sn = st.selectbox("Seri numarası", uygun_snler, key="sn_sec")
-        
-        st.markdown("**Bu operasyondaki ham kayıtlar**")
-        st.dataframe(detay[detay["S/N"] == sn], use_container_width=True, hide_index=True)
+        sn = st.selectbox("Seri numarası", ozet["S/N"].tolist(), key="sn_sec")
+        st.markdown("**Bu operasyondaki ham kayıtlar**"); st.dataframe(detay[detay["S/N"] == sn], use_container_width=True, hide_index=True)
         if not t["rota"].empty:
             st.markdown("**Bu S/N'nin tüm operasyonlardaki yolculuğu**")
             st.dataframe(t["rota"][t["rota"]["S/N"] == sn], use_container_width=True, hide_index=True)
         st.caption("AI bir S/N için süre/operatör söylediğinde bu tablolarla birebir tutmalıdır.")
         indir(detay, "Tüm S/N kayıt detayı", "detay")
     with sek[3]:
-        st.info("""
-        📍 **Parça Rotası (İzlenebilirlik / Traceability)**
-        Bir parçanın doğumundan bitişine kadar fabrikanın içindeki seyahatnamesidir. 
-        Son operasyonda (Örn: 60) bir hata çıkarsa, geçmişe dönüp parçayı önceki operasyonlarda kimin işlediğini anında bulmanızı sağlar.
-        """)
+        st.caption("Her satır bir S/N; operasyon başına saat ve kim yaptığı. 'Baska_Parca_Kodu' doluysa aynı S/N başka parça koduna da yazılmış — veri hatası olabilir.")
         st.dataframe(t["rota"], use_container_width=True, hide_index=True)
         indir(t["rota"], "Parça rotası", "rota")
-        
     with sek[4]:
-        st.info("""
-        ⚖️️ **Operatör Performans ve Adalet Sistemi**
-        Bölünmüş işlerde emeği doğru dağıtmak için hesaplanan saf performans metrikleridir:
-        * **Kayıt:** Ustanın Excel'e 'Başladım/Bittim' diyerek girdiği satır sayısı.
-        * **SN Sayısı:** Ustanın elini sürdüğü benzersiz parça sayısı.
-        * **Adet Payı (Net Üretim):** 1 parçayı 2 usta beraber işlediyse sistem parçayı adilce böler (Örn: 0.5 Yaşar'a, 0.5 Özcan'a yazar).
-        * **Eşdeğer Ort Sa:** Ustanın ortaklaşa yaptığı işler dahil, 1 tam parçayı bitirme hızı.
-        * **Tek Başına Adet & Ort Sa:** Ustanın hiç kimsenin karışmadığı, tek başına alıp bitirdiği parça sayısı ve hızı.
-        * **Medyana Göre %:** Ustanın genel parça ortalamasına (medyan) göre ne kadar yavaş (+) veya hızlı (-) olduğu.
-        """)
+        st.caption("Bölünmüş S/N'de adet saat payı oranında paylaşılır (Adet_Payi). 'Tek_Basina_*' = S/N'yi tek başına bitirdiği işler (karıştırmasız kıyas).")
         st.dataframe(t["operator"], use_container_width=True, hide_index=True)
         indir(t["operator"], "Operatör analizi", "operator")
-        
     with sek[5]:
-        st.info("""
-        🕒 **Vardiya Analizi**
-        Vardiyaların performans kıyası:
-        * **Kayıt & SN Sayısı:** Bu vardiyada girilen satır ve işlem gören benzersiz parça sayısı.
-        * **Adet Payı (Net Üretim):** Vardiya değişiminde bölünen işlerin saate göre hesaplanmış net parça karşılığı.
-        * **Eşdeğer Ort Sa:** Bu vardiyanın 1 tam parçayı bitirme hızı.
-        * **Medyana Göre %:** Vardiyanın ortalama hızının, genel parça ortalamasına (medyan) göre sapması.
-        """)
         st.dataframe(t["vardiya"], use_container_width=True, hide_index=True)
-        
     with sek[6]:
-        st.info("""
-        🏭 **Tezgah Analizi**
-        Tezgahların yük ve performans kıyası:
-        * **Kayıt & SN Sayısı:** Bu tezgahta yapılan işlem ve geçen parça sayısı.
-        * **Adet Payı (Net Üretim):** Bu tezgahta tamamlanan net parça karşılığı.
-        * **Eşdeğer Ort Sa:** Bu tezgahın 1 tam parçayı işleme hızı.
-        * **Medyana Göre %:** Bu tezgahtaki işlem hızının genel medyana göre sapması.
-        """)
         st.dataframe(t["tezgah"], use_container_width=True, hide_index=True)
-        
     with sek[7]:
         st.markdown(f"**Set-up (op {op}, toplam {k['setup_saat']:.1f} sa)**")
         st.dataframe(setup, use_container_width=True, hide_index=True)
-        st.markdown("**Parçaya yazılmış duruşlar (Sadece seçili operasyon için, sebep metniyle)**")
+        st.markdown("**Parçaya yazılmış duruşlar (sebep metniyle)**")
         st.dataframe(t["durus"], use_container_width=True, hide_index=True)
-        
     with sek[8]:
         st.caption("Asistan bu metni okuyor; yukarıdaki tablolarla birebir aynı veri.")
         st.code(sn_ai_baglami(df, pilot, op_adi), language="csv")
