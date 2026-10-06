@@ -2,7 +2,9 @@
 """
 teyit.py — AI cevabını GERÇEK VERİYLE teyit eden modül (4_AI_Asistan.py'deki "🔍 Teyit et" butonu).
 
-Üç şey yapar:
+Dört şey yapar:
+  0) SORUDAN KAPSAM çıkarır (hafta / operasyon / parça / tezgah / operatör / S/N / vardiya / durum) ve ham veriyi o kapsamla
+     yeniden toplar (kapsam merdiveni + filtre hunisi + etkileşimli panel). Sayı hangi kapsamla tutuyor, bellidir.
   1) Cevaptaki SAYILARI, ekranda/AI'a giden tablolarda aranıp bulunur (hangi tablo, hangi satır, hangi kolon).
      Bulunamayan sayı = "teyit edilemedi" (AI kendi hesaplamış ya da uydurmuş olabilir).
   2) Cevapta geçen S/N, operatör, tezgah, parça kodunun HAM KAYITLARINI gösterir (tek tek toplanabilir).
@@ -12,10 +14,11 @@ teyit.py — AI cevabını GERÇEK VERİYLE teyit eden modül (4_AI_Asistan.py'd
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-from sn_izleme import ad_norm, hafta_no, hafta_baslangic, sn_tum_analiz, hafta_operator_parca_tum, PILOT, ALARM_TOLERANS, uzun_kod
+from sn_izleme import ad_norm, hafta_no, hafta_baslangic, sn_tum_analiz, hafta_operator_parca_tum, PILOT, ALARM_TOLERANS, uzun_kod, DURUM_SIRASI
 
 try:
     import common as _C
@@ -26,12 +29,21 @@ except Exception:  # common yoksa yalnızca S/N kısmı çalışır
     _C, METRIC_REGISTRY, EMSAL_MIN_TEKRAR, CT_DUSUK_GUVEN_ORANI = None, {}, 3, 0.5
 
 _TR = str.maketrans("İıŞşĞğÜüÖöÇç", "IiSsGgUuOoCc")
+@lru_cache(maxsize=300_000)
+def _fold_str(s: str) -> str:
+    return " ".join(s.translate(_TR).upper().split())
+
 def fold(s) -> str:
-    return " ".join(str(s).translate(_TR).upper().split())
+    return _fold_str(str(s))
+
+def fold_lp(s) -> str:
+    """Uzunluğu KORUYAN fold (boşluk sıkıştırmaz): maske / bağlam indeksleri orijinal metinle hizalı kalır."""
+    return "".join((ch.translate(_TR).upper() or ch)[0] for ch in str(s))
 
 TABLO_NO = {"sn_baslik": 10, "tezgah_oee": 1, "operator_karne": 2, "pareto": 3, "mtbf_mttr": 4, "vardiya_yorgunluk": 5,
             "setup_parca_kirilimi": 6, "onerilen_ct": 9, "sn_ozet": 10, "sn_detay": 11, "sn_hafta": 12, "sn_setup": 13,
-            "sn_gunluk": 14, "sn_operator": 15, "sn_vardiya": 16, "sn_tezgah": 17, "sn_rota": 18, "sn_durus": 19, "sn_uclar": 20, "hafta_op_parca": 21}
+            "sn_gunluk": 14, "sn_operator": 15, "sn_vardiya": 16, "sn_tezgah": 17, "sn_rota": 18, "sn_durus": 19, "sn_uclar": 20, "hafta_op_parca": 21,
+            "dinamik_kapsam": 22}
 
 SN_METRIKLER = {
     "sn_adet": {"ad": "Adet (S/N bazlı)", "formul": "Adet = farklı S/N sayısı  (aynı S/N'nin tüm kayıtları birleşir, 1 sayılır)",
@@ -49,7 +61,7 @@ SN_METRIKLER = {
 # Bir sayı tabloda başka bir kolonla tesadüfen eşleşmesin: "ana" kolonlar
 PRIMARY = {"sn_ozet": {"Toplam_Saat", "Kayit", "Medyana_Gore_%"}, "sn_detay": {"Sure_Saat"}, "sn_rota": {"Toplam_Sa_Tum_Op"},
            "sn_hafta": {"Adet", "Ort_Sure_Sa", "Medyan_Sure_Sa", "Toplam_Uretim_Sa", "Gunluk_Ort_Adet", "Setup_Sa", "Bolunmus", "Uretim_Gunu"},
-           "sn_gunluk": {"Adet", "Ort_Sure_Sa", "Toplam_Uretim_Sa", "Bolunmus"}}
+           "sn_gunluk": {"Adet", "Ort_Sure_Sa", "Toplam_Uretim_Sa", "Bolunmus"}, "dinamik_kapsam": {"Toplam_Saat", "Kayit"}}
 ADET_ANA = {"S/N sayısı = ADET", "Adet", "SN_Sayisi", "Adet_Payi"}
 
 ANAHTAR = {  # metrik anahtarı -> cevapta/soruda aranacak ifadeler (fold'lanmış)
@@ -95,14 +107,47 @@ def tablolari_topla(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k) -> dict:
 
 
 # ------------------------------------------------------------------ VARLIK ÇIKARIMI
+def _kolon_bul(df: pd.DataFrame, *adaylar):
+    return next((c for c in adaylar if c in df.columns), None)
+
+def _cols(df: pd.DataFrame) -> dict:
+    return {"parca": _kolon_bul(df, "PARÇA NO_ÜRETİM_GİRİLEN", "PARÇA NO ÜRETİM GİRİLEN"), "op": _kolon_bul(df, "OPERASYON_NO", "OPERASYON NO"),
+            "kisi": _kolon_bul(df, "Operator_Kod", "OPERATÖR"), "tezgah": _kolon_bul(df, "TEZGAH"), "sn": _kolon_bul(df, "S/N"),
+            "vard": _kolon_bul(df, "VARDİYA"), "tarih": _kolon_bul(df, "TARİH"), "durum": _kolon_bul(df, "Durum"), "sure": _kolon_bul(df, "Sure_Saat")}
+
+def _parca_kisa(p: str) -> str:
+    """'2547M01G03' -> 'M01G03' (cevaplar çoğunlukla kısa kodu yazar)."""
+    return re.sub(r"^\d+(?=[A-Za-z])", "", str(p))
+
+_DURUM_KEY = [("DURUS", ["DURUS"]), ("REWORK", ["REWORK", "RE-WORK", "YENIDEN ISLEM"]), ("SET_UP", ["SET-UP", "SETUP", "SET UP", "SET_UP"]),
+              ("URETIM", ["URETIM"]), ("YEMEK", ["YEMEK", "MOLA"])]
+
+def _durum_esle(df: pd.DataFrame, f: str) -> list[str]:
+    if "Durum" not in df.columns:
+        return []
+    out = []
+    for v in df["Durum"].dropna().astype(str).unique():
+        fv = fold(v)
+        for tok, ifadeler in _DURUM_KEY:
+            if tok in fv and any(i in f for i in ifadeler) and v not in out:
+                out.append(v)
+    return out
+
+def _hafta_seri(df: pd.DataFrame) -> pd.Series:
+    c = _kolon_bul(df, "TARİH")
+    if c is None:
+        return pd.Series(np.nan, index=df.index)
+    return hafta_no(pd.to_datetime(df[c], errors="coerce")).astype("float")
+
 def varliklar(metin: str, df: pd.DataFrame) -> dict:
     f = fold(metin)
-    out = {"sn": [], "operator": [], "tezgah": [], "parca": [], "hafta": [], "metrik": []}
+    C = _cols(df)
+    out = {"sn": [], "operator": [], "tezgah": [], "parca": [], "hafta": [], "metrik": [], "operasyon": [], "vardiya": [], "tarih": [], "durum": []}
     if "S/N" in df.columns:
         for s in df["S/N"].dropna().astype(str).unique():
             if len(s) >= 4 and re.search(rf"(?<![A-Z0-9]){re.escape(fold(s))}(?![A-Z0-9])", f):
                 out["sn"].append(s)
-    ok = "Operator_Kod" if "Operator_Kod" in df.columns else ("OPERATÖR" if "OPERATÖR" in df.columns else None)
+    ok = C["kisi"]
     if ok:
         gor = {}
         for n in df[ok].dropna().astype(str).unique():
@@ -114,13 +159,45 @@ def varliklar(metin: str, df: pd.DataFrame) -> dict:
         for t in df["TEZGAH"].dropna().astype(str).unique():
             if re.search(rf"(?<![A-Z0-9]){re.escape(fold(t))}(?![A-Z0-9])", f):
                 out["tezgah"].append(t)
-    for c in [c for c in ["PARÇA NO_ÜRETİM_GİRİLEN", "PARÇA NO ÜRETİM GİRİLEN"] if c in df.columns][:1]:
-        for p in df[c].dropna().astype(str).unique():
-            if len(p) >= 5 and fold(p) in f:
+    if C["parca"]:   # tam kod ('2547M01G03') VEYA kısa kod ('M01G03')
+        for p in df[C["parca"]].dropna().astype(str).unique():
+            fp, sk = fold(p), fold(_parca_kisa(p))
+            if len(p) >= 5 and (fp in f or (len(sk) >= 5 and re.search(rf"(?<![A-Z0-9]){re.escape(sk)}(?![A-Z0-9])", f))):
                 out["parca"].append(p)
-    out["parca"] = out["parca"][:5]
-    for m in re.finditer(r"(?:HAFTA|WEEK)\s*[-:]?\s*(\d{1,2})", f):
-        out["hafta"].append(int(m.group(1)))
+    out["parca"] = out["parca"][:8]
+    # --- hafta: "Hafta 36", "36. hafta", "36 hafta", "week 36"; veride olmayan hafta numarası atılır ("son 2 hafta" vb.)
+    hs = _hafta_seri(df)
+    var_olan = set(hs.dropna().astype(int).unique()) if hs.notna().any() else None
+    adaylar = [int(m.group(1)) for m in re.finditer(r"(?:HAFTA|WEEK)\s*[-:]?\s*(\d{1,2})\b", f)]
+    adaylar += [int(m.group(1)) for m in re.finditer(r"\b(\d{1,2})\s*\.?\s*(?:HAFTA|WEEK)\b", f)]
+    for h in adaylar:
+        if h not in out["hafta"] and (var_olan is None or h in var_olan):
+            out["hafta"].append(h)
+    # --- operasyon: "Op 60", "operasyon 60", "60. operasyon", "Op_60"; veride gerçekten olan numaralar
+    if C["op"]:
+        op_var = {m.group(0) for x in df[C["op"]].dropna().astype(str).unique() if (m := re.match(r"^\d{1,3}(?!\d)", x.strip()))}
+        for m in re.finditer(r"\bOP(?:ERASYON)?\.?\s*[-:_]?\s*(\d{1,3})\b|\b(\d{1,3})\s*\.?\s*OPERASYON", f):
+            n = m.group(1) or m.group(2)
+            if n in op_var and n not in out["operasyon"]:
+                out["operasyon"].append(n)
+    # --- vardiya
+    if C["vard"]:
+        c_n = re.sub(r"\s", "", metin)
+        for v in df[C["vard"]].dropna().astype(str).unique():
+            if re.sub(r"\s", "", v) in c_n and v not in out["vardiya"]:
+                out["vardiya"].append(v)
+    # --- tarih (ISO veya gg.aa.yyyy)
+    tr = []
+    for m in re.finditer(r"\b(20\d\d)-(\d{2})-(\d{2})\b", metin):
+        tr.append(m.group(0))
+    for m in re.finditer(r"\b(\d{1,2})\.(\d{1,2})\.(20\d\d)\b", metin):
+        tr.append(f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}")
+    for t in tr:
+        try:
+            out["tarih"].append(pd.Timestamp(t))
+        except Exception:
+            pass
+    out["durum"] = _durum_esle(df, f)
     for anahtar, ifadeler in ANAHTAR.items():
         if any(i in f for i in ifadeler):
             out["metrik"].append(anahtar)
@@ -172,8 +249,10 @@ def _sayi(s: str) -> float:
 
 def _maskele(metin: str, v: dict) -> str:
     m = metin
-    kal = [r"\b(?=\w*\d)(?=\w*[A-Za-zÇĞİÖŞÜçğıöşü])\w+\b", r"TABLO\s*\d+", r"\d{1,2}:\d{2}", r"\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?", r"\b20\d\d\b", r"(?:HAFTA|WEEK)\s*[-:]?\s*\d+",
-           r"(?im)^\s*\d+[.)]\s", r"Op_\d+", r"\bop(?:erasyon)?\s*\d+", r"\d+\s*\.\s*operasyon", r"\bAB-\d+\b"]
+    kal = [r"\b20\d\d-\d{1,2}-\d{1,2}\b", r"\b\d{1,2}[./-]\d{1,2}[./-]20\d\d\b",   # tam tarihler ÖNCE (yoksa '2026-09-03'ten '20' artığı kalır)
+           r"\b(?=\w*\d)(?=\w*[A-Za-zÇĞİÖŞÜçğıöşü])\w+\b", r"TABLO\s*\d+", r"\d{1,2}:\d{2}", r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", r"\b\d{1,2}/\d{1,2}\b", r"\b20\d\d\b",   # ONDALIK (0.25, 2.50) tarih sanılıp maskelenmesin: yalnız 3 parçalı tarih
+           r"(?:HAFTA|WEEK)\s*[-:]?\s*\d+", r"\b\d{1,2}\s*\.?\s*(?:HAFTA|WEEK)\b",   # 'Hafta 36' ve '36. hafta'
+           r"(?im)^\s*\d+[.)]\s", r"Op_\d+", r"\bop(?:erasyon)?\.?\s*[-:_]?\s*\d+", r"\d+\s*\.?\s*operasyon", r"\bAB-\d+\b"]
     for s in v["sn"] + v["parca"] + v["tezgah"]:
         kal.append(re.escape(s))
     for p in kal:
@@ -263,9 +342,10 @@ def _varlik_degeri(T: dict, tablo: str, kolon: str, anilan: set) -> str:
     return ", ".join(f"{x[etk[0]]} → {kolon} = {x[kolon]}" for _, x in r.head(2).iterrows())
 
 
-def sayi_kontrol(cevap: str, V: dict, T: dict, df: pd.DataFrame | None = None) -> pd.DataFrame:
+def sayi_kontrol(cevap: str, V: dict, T: dict, df: pd.DataFrame | None = None, gerekli: frozenset = frozenset()) -> pd.DataFrame:
+    """gerekli: SORUDA açıkça istenen kapsam boyutları ({"operasyon","parca"}); sayı daha geniş kapsamla eşleşirse uyarılır."""
     kat = _katalog(T)
-    f = fold(cevap)
+    f = fold_lp(cevap)   # uzunluk korunur: maske / bağlam indeksleri orijinal metinle hizalı
     sets = {}
     if df is not None:
         if "TEZGAH" in df.columns:
@@ -282,7 +362,8 @@ def sayi_kontrol(cevap: str, V: dict, T: dict, df: pd.DataFrame | None = None) -
               "parca": {fold(x) for x in V["parca"]}}
     hafta_an = set(V["hafta"])
     sat = []
-    maske = fold(_maskele(cevap, V))
+    maske = fold_lp(_maskele(cevap, V))
+    fg = f + " || " + " ".join(f"HAFTA {h}" for h in sorted(hafta_an))   # "35. hafta" yazımı, satır etiketi "Hafta 35" ile eşleşsin
     for m in re.finditer(r"(?<![\w.,])(%\s?)?([-−–]?)(\d+(?:[.,]\d+)?)\s*(%|SAAT\w*|SA\b|DK\b|DAKIKA\w*|ADET\w*|KEZ\b|PARCA\w*)?", maske):
         isaret, s_, birim = m.group(2), m.group(3), ("%" if m.group(1) else (m.group(4) or ""))
         x = _sayi(s_) * (-1 if isaret else 1)
@@ -290,6 +371,7 @@ def sayi_kontrol(cevap: str, V: dict, T: dict, df: pd.DataFrame | None = None) -
         if d == 0 and not birim and abs(x) < 10:
             continue  # sıra/liste numarası olabilir
         bag = f[max(0, m.start() - 70): m.end() + 70]
+        yakin = _yakin_durum(f, m.start(), m.end())
         tol = 0.5 * 10 ** -d + 1e-9
         adaylar = kat[(kat["v"] - x).abs() <= tol].copy() if not kat.empty else kat
         if d == 0 and len(adaylar):
@@ -313,10 +395,13 @@ def sayi_kontrol(cevap: str, V: dict, T: dict, df: pd.DataFrame | None = None) -
         eslesme = "—"; tablo = satir = kolon = ""; durum = "⚠️ teyit edilemedi"
         if len(adaylar):
             def puan(r):
+                if r.tablo == "dinamik_kapsam":
+                    return _puan_dinamik(r, bag, birim, yakin, gerekli)
                 toks = [fold(t.strip()) for t in r.satir.split(" | ") if len(t.strip()) >= 4]
-                var = lambda t, yer: re.search(rf"(?<![A-Z0-9]){re.escape(t)}(?![A-Z0-9])", yer)
+                var = lambda t, yer: (re.search(rf"(?<![A-Z0-9]){re.escape(t)}(?![A-Z0-9])", yer)
+                                      or (fold(_parca_kisa(t)) != t and len(_parca_kisa(t)) >= 5 and re.search(rf"(?<![A-Z0-9]){re.escape(fold(_parca_kisa(t)))}(?![A-Z0-9])", yer)))
                 yerel = sum(1 for t in set(toks) if var(t, bag))
-                genel = sum(1 for t in set(toks) if var(t, f))
+                genel = sum(1 for t in set(toks) if var(t, fg))
                 p = 3 * min(yerel, 3) + min(genel, 2)
                 ilk_ = fold(r.satir.split(" | ")[0]) if r.satir else ""
                 tur_ = _tur(ilk_, kat, sets) if ilk_ else None
@@ -331,6 +416,9 @@ def sayi_kontrol(cevap: str, V: dict, T: dict, df: pd.DataFrame | None = None) -
                     p += 8
                 if birim.startswith(("ADET", "PARCA")) and r.kolon in ADET_ANA:
                     p += 4
+                rt_ = _durum_tok(r.satir.split(" | ")[-1]) if r.tablo == "dinamik_kapsam" else _durum_tok(r.kolon)
+                if yakin and rt_:   # sayının yanındaki kelime 'rework' ise Rework kolonu/satırı; 'duruş' ise duruş...
+                    p += 5 if rt_ == yakin else -6
                 p -= TABLO_NO.get(r.tablo, 30) * 0.01
                 return p, yerel + genel
             sk = [puan(r) for r in adaylar.itertuples()]
@@ -354,10 +442,28 @@ def sayi_kontrol(cevap: str, V: dict, T: dict, df: pd.DataFrame | None = None) -
             elif birim.startswith(("ADET", "PARCA")) and b.kolon not in ADET_ANA:
                 k_ = T.get("_sn_kapsam", {}).get("sn_sayisi")
                 durum = f"🟡 'adet' için bu sayı başka bir kolonla eşleşti ({b.kolon})" + (f"; S/N sayısı (adet) = {k_}" if k_ else "")
-            elif b.satir and b.etiket_isabet == 0:
+            elif b.satir and b.etiket_isabet == 0 and b.tablo != "dinamik_kapsam":
                 durum = "🟡 zayıf eşleşme — satır etiketi cevapta geçmiyor, aynı sayı başka yerde olabilir (tesadüf)"
             else:
                 durum = "✅ eşleşti"
+            rt_b = _durum_tok(b.satir.split(" | ")[-1]) if b.tablo == "dinamik_kapsam" else _durum_tok(b.kolon)
+            if durum.startswith("✅") and yakin and rt_b and yakin != rt_b:
+                durum = f"🟡 sayı eşleşti ama başka durum türüyle ({b.kolon if b.tablo != 'dinamik_kapsam' else b.satir.split(' | ')[-1]}); cevapta sayının yanında '{yakin.lower()}' geçiyor"
+            if durum.startswith("✅") and gerekli:
+                if b.tablo == "dinamik_kapsam" and not gerekli <= _kapsam_boyut(b.satir):
+                    dar = _dar_kapsam(T, _satir_hafta(b.satir), rt_b or yakin, gerekli)
+                    durum = (f"🟡 sayı yalnızca DAHA GENİŞ kapsamla eşleşti ({_kapsam_etiket(b.satir) or '?'}); "
+                             f"soruda istenen kapsam: {', '.join(sorted(gerekli))}" + (f" → ham veride: {dar}" if dar else ""))
+                elif "(parça yok)" in b.satir and "parca" in gerekli:
+                    durum = "🟡 bu satır parça kodu OLMAYAN bir kayıt; sorulan parçaya/operasyona atfedilemez"
+                elif b.tablo == "hafta_op_parca" and "operasyon" in gerekli:
+                    dar = _dar_kapsam(T, _satir_hafta(b.satir), rt_b or yakin, gerekli)
+                    durum = ("🟡 sayı tabloyla tutuyor ama bu tablo (Hafta × Operatör × Parça) OPERASYON içermez; "
+                             "istenen operasyon kapsamı bu satırla doğrulanamaz" + (f" → ham veride: {dar}" if dar else ""))
+        if not durum.startswith("✅") and gerekli and yakin and "dinamik_kapsam" in T and "soru kapsamında ham veri" not in durum:
+            ip = _dar_kapsam(T, next(iter(hafta_an)) if len(hafta_an) == 1 else None, yakin, gerekli)
+            if ip:
+                durum += f" · soru kapsamında ham veri: {ip}"
         if not durum.startswith("✅") and not kat.empty:
             tum_anilan = anılan["tezgah"] | anılan["operator"] | anılan["sn"]
             yk = kat[kat["satir"].map(lambda z: fold(z.split(" | ")[0]) in tum_anilan if z else False)].copy()
@@ -606,11 +712,304 @@ def _sn_ornekler(df, T, key, V, cevap=""):
     return out
 
 
+# ------------------------------------------------------------------ DİNAMİK KAPSAM
+# Soru + cevaptan KAPSAM çıkar (hafta, op, parça, tezgah, operatör, S/N, vardiya, durum) → ham veriyi o kapsamla filtrele →
+# "kapsam merdiveni" ile her genişlik için Durum bazlı saatleri yeniden hesapla. AI'ın söylediği sayı hangi kapsamla tutuyor görünür.
+DIM_SIRA = ["parca", "operasyon", "tezgah", "operator", "sn", "vardiya"]
+DIM_AD = {"parca": "Parça", "operasyon": "Op", "tezgah": "Tezgah", "operator": "Operatör", "sn": "S/N", "vardiya": "Vardiya"}
+
+
+def _kapsam_etiket(satir: str) -> str:
+    for tok in str(satir).split(" | "):
+        t = tok.strip()
+        if t == "tüm fabrika" or (":" in t and t.split(":")[0].split("+")[0] in DIM_AD):
+            return t
+    return ""
+
+
+def _kapsam_boyut(satir: str) -> set:
+    t = _kapsam_etiket(satir)
+    return set() if (not t or t == "tüm fabrika") else set(t.split(":")[0].split("+"))
+
+
+_DURUM_RX = [("DURUS", r"DURUS"), ("REWORK", r"RE-?WORK|YENIDEN ISLEM"), ("SET_UP", r"SET[-_ ]?UP"), ("URETIM", r"URETIM"), ("YEMEK", r"YEMEK|MOLA")]
+
+
+def _durum_tok(metin: str) -> str | None:
+    """'Plansiz_Durus_Sa' / 'Plansız_Duruş' / 'rework' → DURUS / REWORK / ..."""
+    fm = fold(metin)
+    for tok, rx in _DURUM_RX:
+        if re.search(rx, fm):
+            return tok
+    return None
+
+
+def _yakin_durum(f: str, bas: int, son: int) -> str | None:
+    """Sayının AİT OLDUĞU durum kelimesi. Aynı satırda aranır (madde işaretli listede bir sonraki maddenin etiketi karışmasın);
+    sayıdan hemen sonra gelen etiket ('2.50 saat rework') önceliklidir, yoksa sayıdan önceki en yakın etiket ('Toplam Rework Süresi: 0.00')."""
+    ls = f.rfind("\n", 0, bas) + 1
+    le = f.find("\n", son)
+    line = f[ls: le if le != -1 else len(f)]
+    n0, n1 = bas - ls, son - ls
+    sonra, once = [], []
+    for tok, rx in _DURUM_RX:
+        for m in re.finditer(rx, line):
+            if n1 <= m.start() <= n1 + 14:
+                sonra.append((m.start(), tok))
+            elif m.end() <= n0 and n0 - m.end() <= 45:
+                once.append((-m.end(), tok))
+    if sonra:
+        return min(sonra)[1]
+    return min(once)[1] if once else None
+
+
+def _puan_dinamik(r, bag: str, birim: str, yakin, gerekli) -> tuple[float, int]:
+    """Kapsam merdiveni satırı: etiket jetonları değil, kapsamın DEĞERLERİ (operatör/parça/tezgah...) yakın metinde geçiyor mu?"""
+    kt = _kapsam_etiket(r.satir)
+    vals = [] if kt in ("", "tüm fabrika") else [v.strip() for v in re.split(r" · |, ", kt.split(": ", 1)[1]) if v.strip() and v.strip() != "…"]
+    def geciyor(v):
+        for z in {fold(v), fold(_parca_kisa(v))}:
+            if len(z) >= 3 and re.search(rf"(?<![A-Z0-9]){re.escape(z)}(?![A-Z0-9])", bag):
+                return True
+        return False
+    hit = sum(1 for v in vals if geciyor(v))
+    p = 4 + 4 * min(hit, 2)
+    p += 2 if (birim.startswith("SA") and "Saat" in r.kolon and not r.donusum) else 0
+    p += 2 if (birim.startswith(("DK", "DAKIKA")) and r.donusum.startswith("×60")) else 0
+    p += 2 if (birim.startswith(("ADET", "PARCA")) and r.kolon == "Kayit") else 0
+    p -= 2 if (r.donusum and not birim.startswith(("DK", "DAKIKA"))) else 0
+    rt = _durum_tok(r.satir.split(" | ")[-1])
+    if yakin and rt:
+        p += 5 if rt == yakin else -6
+    if gerekli:
+        p += 6 if set(gerekli) <= _kapsam_boyut(r.satir) else -3
+    return p - TABLO_NO["dinamik_kapsam"] * 0.01, hit
+
+
+def _satir_hafta(satir: str):
+    for tok in str(satir).split(" | "):
+        m = re.fullmatch(r"Hafta (\d+)", tok.strip())
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _dar_kapsam(T: dict, hafta, durum_tok: str | None, gerekli) -> str:
+    """Aynı hafta + durum için, SORUDA istenen kapsamı karşılayan en dar satırın GERÇEK değeri."""
+    t = T.get("dinamik_kapsam")
+    if t is None or t.empty or not durum_tok:
+        return ""
+    d = t[t["Durum"].map(lambda x: _durum_tok(x) == durum_tok)]
+    if hafta is not None:
+        d = d[d["Hafta"] == hafta]
+    d = d[d["Kapsam"].map(lambda k: set(gerekli) <= _kapsam_boyut(f"x | {k}"))]
+    if d.empty:
+        return ""
+    d = d.assign(_n=d["Kapsam"].map(lambda k: len(_kapsam_boyut(f"x | {k}")))).sort_values(["_n"])
+    r = d.iloc[0]
+    hf = "" if pd.isna(r["Hafta"]) else f"Hafta {int(r['Hafta'])} · "
+    return f"{hf}{r['Kapsam']} → {r['Durum']} = {r['Toplam_Saat']:g} sa ({int(r['Kayit'])} kayıt)"
+
+
+def kapsam_cikar(soru: str, cevap: str, df: pd.DataFrame) -> dict:
+    V, Vs = varliklar(soru + "\n" + cevap, df), varliklar(soru, df)
+    K = {"hafta": list(V["hafta"]), "tarih": None, "operasyon": V["operasyon"][:3], "parca": V["parca"], "tezgah": V["tezgah"][:4],
+         "operator": V["operator"][:4], "sn": V["sn"][:6], "vardiya": Vs["vardiya"][:3], "durum": list(Vs["durum"]), "varsayim": []}
+    if not K["hafta"] and Vs["tarih"]:
+        K["tarih"] = (min(Vs["tarih"]), max(Vs["tarih"]))
+    f = fold(soru)
+    hs = _hafta_seri(df)
+    if not K["hafta"] and not K["tarih"] and hs.notna().any() and re.search(r"\b(GECEN|SON|BU)\s+HAFTA\b", f):
+        tc = _cols(df)["tarih"]
+        son = int(hafta_no(pd.Series([pd.to_datetime(df[tc], errors="coerce").max()])).iloc[0]) if tc else int(hs.max())
+        w = son if re.search(r"\bBU\s+HAFTA\b", f) else son - 1
+        K["hafta"] = [w]
+        K["varsayim"].append(f"Soruda açık hafta no yok; 'geçen/son hafta' = verideki son haftadan bir önceki ({son - 1}), 'bu hafta' = {son} varsayıldı. Farklıysa aşağıdaki seçiciden değiştirin.")
+    K["_ctx"] = {"hs": hs}   # büyük veride tekrar tekrar hesaplanmasın
+    K["gerekli"] = frozenset(d for d in DIM_SIRA if Vs[d])
+    K["aktif"] = [d for d in DIM_SIRA if K[d]]
+    return K
+
+
+def kapsam_filtre(df: pd.DataFrame, K: dict, dims, hafta="K") -> pd.DataFrame:
+    """hafta: 'K' → K'deki hafta/tarih; sayı → yalnız o hafta; None → hafta filtresi yok."""
+    C = _cols(df)
+    ctx = K.get("_ctx") if isinstance(K.get("_ctx"), dict) else {}
+    hs = ctx["hs"] if "hs" in ctx else _hafta_seri(df)
+    m = pd.Series(True, index=df.index)
+    if hafta == "K":
+        if K.get("hafta"):
+            m &= hs.isin(K["hafta"])
+        elif K.get("tarih") and C["tarih"]:
+            t = pd.to_datetime(df[C["tarih"]], errors="coerce")
+            m &= (t >= K["tarih"][0]) & (t < K["tarih"][1] + pd.Timedelta(days=1))
+    elif hafta is not None:
+        m &= hs == hafta
+    if "parca" in dims and K.get("parca") and C["parca"]:
+        m &= df[C["parca"]].astype(str).isin(K["parca"])
+    if "operasyon" in dims and K.get("operasyon") and C["op"]:
+        pat = "^(?:" + "|".join(re.escape(o) for o in K["operasyon"]) + r")(?!\d)"
+        m &= df[C["op"]].astype(str).str.strip().str.match(pat)
+    if "tezgah" in dims and K.get("tezgah") and C["tezgah"]:
+        m &= df[C["tezgah"]].astype(str).isin(K["tezgah"])
+    if "operator" in dims and K.get("operator") and C["kisi"]:
+        if "opf" not in ctx:
+            ctx["opf"] = df[C["kisi"]].astype(str).map(fold)
+        m &= ctx["opf"].isin(K["operator"])
+    if "sn" in dims and K.get("sn") and C["sn"]:
+        m &= df[C["sn"]].astype(str).isin(K["sn"])
+    if "vardiya" in dims and K.get("vardiya") and C["vard"]:
+        m &= df[C["vard"]].astype(str).isin(K["vardiya"])
+    return df[m]
+
+
+def _kapsam_metni(K: dict, rung) -> str:
+    if not rung:
+        return "tüm fabrika"
+    vals = []
+    for d in rung:
+        v = K[d]
+        vals.append(" ".join(f"Op {x}" for x in v) if d == "operasyon" else ", ".join(str(x) for x in v[:3]) + (" …" if len(v) > 3 else ""))
+    return "+".join(rung) + ": " + " · ".join(vals)
+
+
+def kapsam_merdiveni(df: pd.DataFrame, K: dict) -> pd.DataFrame:
+    """Her kapsam genişliği (tüm fabrika → tek boyut → hepsi birlikte) × Durum için gerçek saat/kayıt. SIFIR olanlar da yazılır (rework = 0.00 teyidi için)."""
+    C = _cols(df)
+    if not (C["durum"] and C["sure"]):
+        return pd.DataFrame()
+    akt = K["aktif"]
+    if not (K["hafta"] or K["tarih"] or akt or K["durum"]):
+        return pd.DataFrame()
+    rungs = [()] + [(d,) for d in akt]
+    if "operasyon" in akt and "parca" in akt and len(akt) > 2:
+        rungs.append(("parca", "operasyon"))
+    if len(akt) > 1:
+        rungs.append(tuple(akt))
+    rungs = list(dict.fromkeys(rungs))
+    var = [x for x in df[C["durum"]].dropna().astype(str).unique()]
+    durumlar = [x for x in DURUM_SIRASI if x in var] + [x for x in var if x not in DURUM_SIRASI]
+    rows = []
+    for w in (K["hafta"] or [None]):
+        for rung in rungs:
+            d = kapsam_filtre(df, K, rung, hafta=("K" if w is None else w))
+            g = d.groupby(d[C["durum"]].astype(str))[C["sure"]].agg(["sum", "size"])
+            for du in durumlar:
+                s_, n_ = (g.loc[du, "sum"], g.loc[du, "size"]) if du in g.index else (0.0, 0)
+                rows.append({"Hafta": float(w) if w is not None else np.nan, "Kapsam": _kapsam_metni(K, rung), "Durum": du,
+                             "Toplam_Saat": round(float(s_), 2), "Kayit": int(n_)})
+    return pd.DataFrame(rows)
+
+
+def kapsam_hunisi(df: pd.DataFrame, K: dict) -> pd.DataFrame:
+    """Filtreler sırayla eklenirken satır / saat nasıl daralıyor? (hangi filtre neyi eliyor)"""
+    C = _cols(df)
+    if not (C["durum"] and C["sure"]):
+        return pd.DataFrame()
+    var = df[C["durum"]].dropna().astype(str).unique().tolist()
+    durumlar = [x for x in DURUM_SIRASI if x in var]
+    adimlar = [("Tüm veri", [], None)]
+    if K["hafta"]:
+        adimlar.append(("Hafta " + ", ".join(str(h) for h in K["hafta"]), [], "K"))
+    elif K["tarih"]:
+        adimlar.append((f"Tarih {K['tarih'][0]:%Y-%m-%d} – {K['tarih'][1]:%Y-%m-%d}", [], "K"))
+    cum = []
+    for d in K["aktif"]:
+        cum = cum + [d]
+        adimlar.append((f"+ {DIM_AD[d]} = {_kapsam_metni(K, (d,)).split(': ', 1)[1]}", list(cum), "K"))
+    rows = []
+    for ad, dims, h in adimlar:
+        x = kapsam_filtre(df, K, dims, hafta=h) if h else df
+        r = {"Adım": ad, "Satır": len(x), "Toplam_Saat": round(float(x[C["sure"]].sum()), 2)}
+        sm = x.groupby(x[C["durum"]].astype(str))[C["sure"]].sum()
+        for du in durumlar:
+            r[du + "_Sa"] = round(float(sm.get(du, 0.0)), 2)
+        rows.append(r)
+    return pd.DataFrame(rows)
+
+
+def kapsam_uyarilari(df: pd.DataFrame, K: dict) -> list[str]:
+    C = _cols(df)
+    out = list(K.get("varsayim", []))
+    if not (C["durum"] and C["sure"]):
+        return out
+    base = kapsam_filtre(df, K, [], hafta="K")
+    dur = base[base[C["durum"]].astype(str).map(fold).str.contains("DURUS")]
+    if len(dur) and C["parca"]:
+        bos = dur[C["parca"]].isna()
+        if bos.any():
+            out.append(f"Kapsamdaki duruş kayıtlarının {int(bos.sum())}/{len(dur)} tanesinde ({dur.loc[bos, C['sure']].sum():.2f} sa) PARÇA KODU BOŞ — bunlar hiçbir parçaya/operasyona atfedilemez; "
+                       "cevap bunları 'Op/parça' duruşu gibi toplamışsa yanlıştır.")
+    if K["operasyon"] and len(dur) and C["op"]:
+        pat = "^(?:" + "|".join(re.escape(o) for o in K["operasyon"]) + r")(?!\d)"
+        kesin = dur[C["op"]].astype(str).str.strip().str.match(pat)
+        out.append(f"Duruş satırlarında OPERASYON alanı çoğunlukla sebep metni taşır: kapsamdaki {len(dur)} duruş kaydının {int(kesin.sum())} tanesinde operasyon numarası yazılı. "
+                   f"'Op {', '.join(K['operasyon'])}' filtresi duruşları büyük ölçüde eler; 'duruş Op 60'ta' diye kesin konuşmak için verinin kendisi yetersiz olabilir (operasyonsuz kapsamlar merdivende ayrıca gösterilir).")
+    if K["hafta"] and C["tarih"]:
+        yil = pd.to_datetime(kapsam_filtre(df, K, [], hafta="K")[C["tarih"]], errors="coerce").dt.year.nunique()
+        if yil > 1:
+            out.append("Seçili hafta numarası birden fazla yılda var; değerler iki yılı birlikte topluyor olabilir.")
+    return out
+
+
+def sorgu_paneli(st, df: pd.DataFrame, K: dict, key: str = "teyit"):
+    """Etkileşimli panel: seçimler kapsamdan önceden doldurulur; kullanıcı değiştirip ham kayıtları kendi toplar."""
+    C = _cols(df)
+    hs = _hafta_seri(df)
+    st.caption("Seçimler sorudan/cevaptan otomatik dolduruldu; değiştirip sonucu ham kayıttan kendiniz görün. Boş bırakılan filtre uygulanmaz.")
+    c1, c2, c3 = st.columns(3)
+    h_opt = sorted(int(x) for x in hs.dropna().unique())
+    sec_h = c1.multiselect("Hafta (Per→Çar)", h_opt, default=[h for h in K["hafta"] if h in h_opt], key=f"{key}_h")
+    op_opt = sorted(df[C["op"]].dropna().astype(str).str.strip().unique().tolist())[:400] if C["op"] else []
+    ist = K.get("gerekli", frozenset())   # varsayılan: yalnız SORUDA istenen boyutlar (cevapta geçen her şey değil; aksi halde kesişim hep boş kalır)
+    sec_op = c2.multiselect("Operasyon (numara ile başlayan)", op_opt, default=[o for o in K["operasyon"] if o in op_opt and "operasyon" in ist], key=f"{key}_op")
+    p_opt = sorted(df[C["parca"]].dropna().astype(str).unique().tolist()) if C["parca"] else []
+    sec_p = c3.multiselect("Parça", p_opt, default=[x for x in K["parca"] if x in p_opt and "parca" in ist], key=f"{key}_p")
+    c4, c5, c6 = st.columns(3)
+    t_opt = sorted(df[C["tezgah"]].dropna().astype(str).unique().tolist()) if C["tezgah"] else []
+    sec_t = c4.multiselect("Tezgah", t_opt, default=[x for x in K["tezgah"] if x in t_opt and "tezgah" in ist], key=f"{key}_t")
+    o_opt = sorted(df[C["kisi"]].dropna().astype(str).unique().tolist()) if C["kisi"] else []
+    sec_o = c5.multiselect("Operatör", o_opt, default=[x for x in o_opt if fold(x) in K["operator"] and "operator" in ist], key=f"{key}_o")
+    du_opt = df[C["durum"]].dropna().astype(str).unique().tolist() if C["durum"] else []
+    sec_d = c6.multiselect("Durum", du_opt, default=[x for x in K["durum"] if x in du_opt], key=f"{key}_d")
+    K2 = {**K, "hafta": sec_h, "tarih": None if sec_h else K["tarih"], "operasyon": sec_op, "parca": sec_p, "tezgah": sec_t,
+          "operator": [fold(x) for x in sec_o], "sn": K["sn"] if "sn" in ist else [], "vardiya": K["vardiya"]}
+    d = kapsam_filtre(df, K2, DIM_SIRA, hafta="K")
+    if sec_d:
+        d = d[d[C["durum"]].astype(str).isin(sec_d)]
+    st.markdown(f"**Seçili kapsam: {len(d)} kayıt · {float(d[C['sure']].sum()):.2f} saat**")
+    if d.empty:
+        st.info("Bu filtrelerle kayıt yok. Duruş satırlarında OPERASYON alanı çoğunlukla sebep metnidir; 'Operasyon' seçimini boşaltıp parça/operatör ile deneyin.")
+        return
+    ozet = d.groupby(d[C["durum"]].astype(str))[C["sure"]].agg(Kayit="size", Toplam_Saat="sum").round(2).reset_index().rename(columns={C["durum"]: "Durum"})
+    st.dataframe(ozet, use_container_width=True, hide_index=True)
+    ek = d.assign(Operatör=d[C["kisi"]].astype(str).map(ad_norm) if C["kisi"] else "", Parça=d[C["parca"]].fillna("(parça yok)") if C["parca"] else "")
+    kir = ek.groupby(["Operatör", "Parça", C["durum"]])[C["sure"]].agg(Kayit="size", Toplam_Saat="sum").round(2).reset_index().sort_values("Toplam_Saat", ascending=False)
+    st.caption("Operatör × Parça × Durum kırılımı (ilk 40)")
+    st.dataframe(kir.head(40), use_container_width=True, hide_index=True)
+    kol = [c for c in [C["tarih"], C["vard"], C["tezgah"], C["kisi"], C["durum"], C["parca"], C["op"], "Durus_Sebebi_Ham", C["sn"], C["sure"]] if c and c in d.columns]
+    ham = d[kol].sort_values(C["tarih"]) if C["tarih"] else d[kol]
+    st.caption(f"HAM KAYITLAR ({min(len(ham), 500)}/{len(ham)})")
+    st.dataframe(ham.head(500), use_container_width=True, hide_index=True)
+    st.download_button("⬇️ Ham kayıtları CSV indir", ham.to_csv(index=False).encode("utf-8-sig"), file_name="teyit_ham_kayitlar.csv", mime="text/csv", key=f"{key}_dl")
+
+
 # ------------------------------------------------------------------ ANA GİRİŞ
 def teyit_raporu(soru: str, cevap: str, df: pd.DataFrame, T: dict) -> dict:
     V = varliklar(soru + "\n" + cevap, df)
     VC = varliklar(cevap, df)           # varlıklar: soru+cevap; sayı maskesi: cevap
-    sayilar = sayi_kontrol(cevap, VC, T, df)
+    din = {"kapsam": None, "merdiven": pd.DataFrame(), "huni": pd.DataFrame(), "uyarilar": []}
+    T = dict(T)
+    gerekli = frozenset()
+    try:   # dinamik kapsam: bir hata tüm raporu düşürmesin
+        K = kapsam_cikar(soru, cevap, df)
+        din = {"kapsam": K, "merdiven": kapsam_merdiveni(df, K), "huni": kapsam_hunisi(df, K), "uyarilar": kapsam_uyarilari(df, K)}
+        if not din["merdiven"].empty:
+            T["dinamik_kapsam"] = din["merdiven"]
+            gerekli = K["gerekli"]
+    except Exception as e:
+        din["uyarilar"].append(f"Dinamik kapsam hesaplanamadı: {e}")
+    sayilar = sayi_kontrol(cevap, VC, T, df, gerekli)
     iliski = iliski_kontrol(V, df, cevap)
     kanit = {"sn": {s: kanit_sn(df, s) for s in V["sn"][:6]}, "kisi": {o: kanit_kisi(df, o) for o in V["operator"][:4]},
              "tezgah": {t: kanit_tezgah(df, t) for t in V["tezgah"][:4]}}
@@ -643,13 +1042,27 @@ def teyit_raporu(soru: str, cevap: str, df: pd.DataFrame, T: dict) -> dict:
     n = len(sayilar); ok = int((sayilar["Durum"].str.startswith("✅")).sum()) if n else 0
     zayif = int((sayilar["Durum"].str.startswith(("🟡", "⚠️ bu değer"))).sum()) if n else 0
     fdurum = [o["durum"] + (" " + o["iddia_durum"] if o.get("iddia_durum") else "") for f in formuller for o in f["ornekler"]]
-    return {"varliklar": V, "sayilar": sayilar, "iliski": iliski, "kanit": kanit, "formuller": formuller,
+    return {"varliklar": V, "sayilar": sayilar, "iliski": iliski, "kanit": kanit, "formuller": formuller, "dinamik": din,
             "ozet": {"sayi": n, "eslesen": ok, "zayif": zayif, "eslesmeyen": n - ok - zayif,
                      "iliski": len(iliski), "iliski_yok": int(iliski["Ham veride"].str.startswith("❌").sum()) if len(iliski) else 0, "formul_ornek": len(fdurum), "formul_tutan": sum(d.startswith("✅") for d in fdurum), "formul_farkli": sum(("FARKLI" in d or "YANLIŞ" in d) for d in fdurum)}}
 
 
 # ------------------------------------------------------------------ STREAMLIT
-def render_teyit(st, soru: str, cevap: str, df: pd.DataFrame, T: dict, kaynak_notu: str = ""):
+def _kapsam_ozeti(K: dict) -> str:
+    p = []
+    if K["hafta"]:
+        p.append("Hafta " + ", ".join(str(h) for h in K["hafta"]))
+    if K["tarih"]:
+        p.append(f"Tarih {K['tarih'][0]:%d.%m.%Y} – {K['tarih'][1]:%d.%m.%Y}")
+    for d in DIM_SIRA:
+        if K[d]:
+            p.append(f"{DIM_AD[d]}: " + (" ".join(f"Op {x}" for x in K[d]) if d == "operasyon" else ", ".join(str(x) for x in K[d][:4])))
+    if K["durum"]:
+        p.append("Durum: " + ", ".join(K["durum"]))
+    return "  ·  ".join(p) if p else "Tanınan kapsam yok"
+
+
+def render_teyit(st, soru: str, cevap: str, df: pd.DataFrame, T: dict, kaynak_notu: str = "", key: str = "teyit"):
     R = teyit_raporu(soru, cevap, df, T)
     o = R["ozet"]
     if kaynak_notu:
@@ -660,6 +1073,26 @@ def render_teyit(st, soru: str, cevap: str, df: pd.DataFrame, T: dict, kaynak_no
         st.warning("Teyit edilemeyen/şüpheli sayılar AI'ın kendi hesapladığı, yanlış satırdan aldığı ya da tablolarda olmayan değerler olabilir; bunları savunmadan önce ham kayıtlardan elle kontrol edin.")
     if o.get("iliski_yok"):
         st.error(f"❌ {o['iliski_yok']} ilişki iddiası ham kayıtlarda YOK (örn. cevapta geçen kişi o S/N'yi hiç çalışmamış). Aşağıdaki '2) Ham kayıtlar' bölümüne bakın.")
+    din = R["dinamik"]
+    with st.expander("0) Sorunun kapsamı → HAM VERİDEN yeniden hesap (dinamik)", expanded=True):
+        if din["kapsam"] is None:
+            st.info("Kapsam çıkarılamadı. " + " ".join(din["uyarilar"]))
+        else:
+            st.markdown("**Tanınan kapsam:** " + _kapsam_ozeti(din["kapsam"]))
+            for u in din["uyarilar"]:
+                st.warning(u)
+            if not din["merdiven"].empty:
+                st.caption("Kapsam merdiveni: aynı soru için kapsam daraldıkça gerçek saat ne oluyor? Cevaptaki sayı hangi satırla tutuyorsa cevap O kapsamı anlatıyordur (sıfırlar da gösterilir).")
+                pv = din["merdiven"].pivot_table(index=["Hafta", "Kapsam"], columns="Durum", values="Toplam_Saat", aggfunc="sum", sort=False)
+                pv = pv[[c for c in DURUM_SIRASI if c in pv.columns] + [c for c in pv.columns if c not in DURUM_SIRASI]].reset_index()
+                st.dataframe(pv, use_container_width=True, hide_index=True)
+            if not din["huni"].empty:
+                st.caption("Filtre hunisi: hangi filtre kaç satırı / saati eliyor")
+                st.dataframe(din["huni"], use_container_width=True, hide_index=True)
+            st.markdown("**Kendin dene** — filtreleri değiştir, ham kayıtları gör:")
+            frag = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
+            panel = lambda: sorgu_paneli(st, df, din["kapsam"], key)
+            (frag(panel) if frag else panel)()   # fragment: seçim değişince yalnız bu blok yenilenir, rapor kaybolmaz
     with st.expander("1) Cevaptaki sayılar → hangi tablo / satır / kolon", expanded=True):
         if R["sayilar"].empty:
             st.info("Cevapta kontrol edilecek sayı bulunamadı.")
