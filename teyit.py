@@ -15,7 +15,7 @@ import re
 import numpy as np
 import pandas as pd
 
-from sn_izleme import ad_norm, hafta_no, hafta_baslangic, sn_tum_analiz, PILOT, ALARM_TOLERANS, uzun_kod
+from sn_izleme import ad_norm, hafta_no, hafta_baslangic, sn_tum_analiz, hafta_operator_parca_tum, PILOT, ALARM_TOLERANS, uzun_kod
 
 try:
     import common as _C
@@ -31,7 +31,7 @@ def fold(s) -> str:
 
 TABLO_NO = {"sn_baslik": 10, "tezgah_oee": 1, "operator_karne": 2, "pareto": 3, "mtbf_mttr": 4, "vardiya_yorgunluk": 5,
             "setup_parca_kirilimi": 6, "onerilen_ct": 9, "sn_ozet": 10, "sn_detay": 11, "sn_hafta": 12, "sn_setup": 13,
-            "sn_gunluk": 14, "sn_operator": 15, "sn_vardiya": 16, "sn_tezgah": 17, "sn_rota": 18, "sn_durus": 19, "sn_uclar": 20}
+            "sn_gunluk": 14, "sn_operator": 15, "sn_vardiya": 16, "sn_tezgah": 17, "sn_rota": 18, "sn_durus": 19, "sn_uclar": 20, "hafta_op_parca": 21}
 
 SN_METRIKLER = {
     "sn_adet": {"ad": "Adet (S/N bazlı)", "formul": "Adet = farklı S/N sayısı  (aynı S/N'nin tüm kayıtları birleşir, 1 sayılır)",
@@ -85,6 +85,12 @@ def tablolari_topla(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k) -> dict:
             if a in t and not t[a].empty:
                 T[b] = t[a]
         T["_sn_kapsam"] = t["kapsam"]
+    try:
+        hop = hafta_operator_parca_tum(df, op_adi)
+        if not hop.empty:
+            T["hafta_op_parca"] = hop   # AI TABLO 21: hafta × operatör × parça saatleri (tüm fabrika)
+    except Exception:
+        pass
     return T
 
 
@@ -182,6 +188,62 @@ def _tur(etiket0: str, T_df: pd.DataFrame, sets: dict) -> str | None:
     return None
 
 
+def _celiskiler(satir: str, sets: dict, anilan: dict, hafta_an: set) -> list[tuple[str, str]]:
+    """Satır etiketindeki HER varlık, cevapta anılanla çelişiyor mu? (operatör + parça + tezgah + hafta)"""
+    out = []
+    for tok in [t.strip() for t in satir.split(" | ") if t.strip()]:
+        ft = fold(tok)
+        m = re.fullmatch(r"HAFTA (\d+)", ft)
+        if m:
+            if hafta_an and int(m.group(1)) not in hafta_an:
+                out.append(("hafta", tok))
+            continue
+        tur = _tur(ft, None, sets)
+        if tur and anilan.get(tur) and ft not in anilan[tur]:
+            out.append((tur, tok))
+    return out
+
+
+def _hop_gercek(T: dict, anilan: dict, hafta_an: set) -> str:
+    """TABLO 21'den (hafta × operatör × parça) cevapta anılanlara uyan satırların SAAT değerleri."""
+    t = T.get("hafta_op_parca")
+    if t is None or t.empty or not anilan.get("operator"):
+        return ""
+    m = t["Operatör"].astype(str).map(fold).isin(anilan["operator"])
+    if anilan.get("parca"):
+        m &= t["Parça"].astype(str).map(fold).isin(anilan["parca"])
+    if hafta_an:
+        m &= t["Hafta"].isin(list(hafta_an))
+    r = t[m].sort_values("Hafta").head(4)
+    return "; ".join(f"Hafta {int(x.Hafta)} · {x['Operatör']} · {x['Parça']} → üretim {x.Uretim_Sa:g} sa, set-up {x.Set_Up_Sa:g} sa, duruş {x.Plansiz_Durus_Sa:g} sa"
+                     for _, x in r.iterrows())
+
+
+def _gercek_deger_cok(T: dict, tablo: str, kolon: str, anilan: dict, hafta_an: set, sets: dict) -> str:
+    """Cevapta anılan TÜM varlıklara (operatör+parça+tezgah+hafta) uyan satırın o kolondaki gerçek değeri."""
+    t = T.get(tablo)
+    if t is None or t.empty or kolon not in t.columns:
+        return ""
+    m = pd.Series(True, index=t.index)
+    kullanilan = False
+    for tur, an in anilan.items():
+        if not an:
+            continue
+        kols = [c for c in t.columns if not pd.api.types.is_numeric_dtype(t[c]) and not pd.api.types.is_datetime64_any_dtype(t[c])]
+        hit = pd.Series(False, index=t.index)
+        for c in kols:
+            hit |= t[c].astype(str).map(fold).isin(an) | t[c].astype(str).map(fold).apply(lambda z: tur != "sn" and any(a in z.split(", ") for a in an))
+        if hit.any():
+            m &= hit; kullanilan = True
+    if hafta_an and "Hafta" in t.columns:
+        hh = t["Hafta"].isin(list(hafta_an))
+        if hh.any():
+            m &= hh; kullanilan = True
+    r = t[m] if kullanilan else t.iloc[0:0]
+    et = [c for c in t.columns if not pd.api.types.is_numeric_dtype(t[c]) and not pd.api.types.is_datetime64_any_dtype(t[c])][:3]
+    return "; ".join(f"{' / '.join(str(x[c]) for c in et)} → {kolon} = {x[kolon]}" for _, x in r.head(2).iterrows())
+
+
 def _rota_op_ok(kolon: str, bag: str) -> bool:
     m = re.match(r"Op(\d+)_", kolon)
     if not m:
@@ -213,7 +275,12 @@ def sayi_kontrol(cevap: str, V: dict, T: dict, df: pd.DataFrame | None = None) -
             sets["operator"] = {fold(x) for x in df[okc].dropna().astype(str).unique()}
         if "S/N" in df.columns:
             sets["sn"] = {fold(x) for x in df["S/N"].dropna().astype(str).unique()}
-    anılan = {"tezgah": {fold(x) for x in V["tezgah"]}, "operator": set(V["operator"]), "sn": {fold(x) for x in V["sn"]}}
+        pk_ = next((c for c in ("PARÇA NO_ÜRETİM_GİRİLEN", "PARÇA NO ÜRETİM GİRİLEN") if c in df.columns), None)
+        if pk_:
+            sets["parca"] = {fold(x) for x in df[pk_].dropna().astype(str).unique() if len(str(x)) >= 5}
+    anılan = {"tezgah": {fold(x) for x in V["tezgah"]}, "operator": set(V["operator"]), "sn": {fold(x) for x in V["sn"]},
+              "parca": {fold(x) for x in V["parca"]}}
+    hafta_an = set(V["hafta"])
     sat = []
     maske = fold(_maskele(cevap, V))
     for m in re.finditer(r"(?<![\w.,])(%\s?)?([-−–]?)(\d+(?:[.,]\d+)?)\s*(%|SAAT\w*|SA\b|DK\b|DAKIKA\w*|ADET\w*|KEZ\b|PARCA\w*)?", maske):
@@ -273,10 +340,12 @@ def sayi_kontrol(cevap: str, V: dict, T: dict, df: pd.DataFrame | None = None) -
             eslesme = f"{b.v:.4g}"
             ilk = fold(b.satir.split(" | ")[0]) if b.satir else ""
             tur = _tur(ilk, kat, sets) if ilk else None
-            if tur and anılan[tur] and ilk not in anılan[tur]:
-                gercek = _varlik_degeri(T, b.tablo, b.kolon, anılan[tur])
-                durum = (f"⚠️ bu değer başka bir {tur}'e ait ({b.satir.split(' | ')[0]})"
-                         + (f"; cevapta anılan için tabloda: {gercek}" if gercek else ""))
+            cel = _celiskiler(b.satir, sets, anılan, hafta_an) if b.satir else []
+            if cel:
+                gercek = (_hop_gercek(T, anılan, hafta_an) if birim.startswith("SA") else "") or _gercek_deger_cok(T, b.tablo, b.kolon, anılan, hafta_an, sets)
+                dat = {"operator": "operatöre", "parca": "parçaya", "tezgah": "tezgaha", "sn": "seri numarasına", "hafta": "haftaya"}
+                durum = (f"⚠️ bu değer başka bir {dat.get(cel[0][0], 'varlığa')} ait ({cel[0][1]})"
+                         + (f"; cevapta anılanlar için tabloda: {gercek}" if gercek else "; cevapta anılanlar için tabloda bu değer yok"))
             elif isaret_ters:
                 durum = f"🟡 sayı eşleşti ama İŞARET TERS (tabloda {b.v:.4g})"
             elif b.tablo in PRIMARY and not (b.kolon in PRIMARY[b.tablo] or (b.tablo == "sn_rota" and _rota_op_ok(b.kolon, bag))):

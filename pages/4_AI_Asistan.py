@@ -1,20 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 4_AI_Asistan.py — AI Fabrika Asistanı.
-
-Özellik: Sadece sayı vermekle kalmaz, "bu sayıyı nasıl buldun?" diye
-sorulduğunda hangi METRİĞİ, hangi FORMÜLÜ, hangi KOLONLARI kullandığını
-söyler. Bunu sağlamak için METRIC_REGISTRY (common.py) sistem promptuna
-tam olarak enjekte edilir ve modelden HER sayısal iddiada kullandığı
-metriğin adını parantez içinde belirtmesi istenir.
 """
 from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
 
-from sn_izleme import sn_ai_baglami, SN_AI_KURALI   # S/N bazlı parça izleme (AI bağlamı)
-from teyit import tablolari_topla, render_teyit      # 🔍 "Teyit et" butonu: cevabı gerçek veriyle doğrular
+from sn_izleme import sn_ai_baglami, SN_AI_KURALI   
+from teyit import tablolari_topla, render_teyit      
 from common import (
     METRIC_REGISTRY, metrik_aciklamasi, veri_yukle_ve_filtrele,
     compute_tezgah_oee, compute_operator_karne, compute_pareto,
@@ -45,11 +39,9 @@ if df.empty:
     st.warning("Seçili filtrelerle eşleşen veri yok.")
     st.stop()
 
-# GERÇEK İSİMLERİ VERİYE UYGULA (AI'ın okuyup isimle cevap verebilmesi için)
 if "Operator_Kod" in df.columns:
     df["Operator_Kod"] = df["Operator_Kod"].replace(OPERATOR_SOZLUGU)
 
-# ---------------------------------------------------------------- METRİK SÖZLÜĞÜ (her zaman görünür)
 with st.expander("📖 Kullanılan Tüm Metrik ve Formüller Sözlüğü", expanded=False):
     for anahtar in METRIC_REGISTRY:
         st.markdown(metrik_aciklamasi(anahtar))
@@ -59,7 +51,6 @@ st.markdown("---")
 
 # ---------------------------------------------------------------- API AYARLARI
 import os
-
 from dotenv import load_dotenv
 
 try:
@@ -75,36 +66,28 @@ if not GEMINI_API_KEY:
     st.error("HATA: .env dosyasında GEMINI_API_KEY bulunamadı!")
     st.stop()
 
-# Google kütüphanesini API anahtarınla başlatıyoruz
 genai.configure(api_key=GEMINI_API_KEY)
 
-
-# Google sunucularından anlık aktif modelleri çeken dinamik fonksiyon
 @st.cache_data(show_spinner=False)
 def aktif_modelleri_getir():
     modeller = []
     try:
         for m in genai.list_models():
-            # Sadece metin/içerik üretebilen modelleri filtrele
             if 'generateContent' in m.supported_generation_methods:
-                # "models/gemini-xxx" formatındaki baştaki "models/" kısmını temizle
                 modeller.append(m.name.replace("models/", ""))
     except Exception as e:
         st.sidebar.error(f"Modeller çekilemedi: {e}")
     return modeller
-
 
 guncel_modeller = aktif_modelleri_getir()
 if not guncel_modeller:
     st.error("Google'dan aktif model listesi alınamadı (API anahtarı geçersiz olabilir ya da ağ engelleniyor).")
     st.stop()
 
-# Yan menüyü Google'ın anlık olarak izin verdiği modellerle doldur
 model_adi = st.sidebar.selectbox("Google Gemini Modeli", guncel_modeller, index=0)
 
 # =============================================================================
-# BAĞLAM (CONTEXT) OLUŞTURMA — filtrelenmiş veriden özet tablolar + kullanılan
-# metriklerin formülleri bir arada modele gönderilir.
+# BAĞLAM (CONTEXT) OLUŞTURMA
 # =============================================================================
 def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
     parcalar = []
@@ -148,12 +131,10 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
     if not onerilen_ct.empty:
         parcalar.append(
             "### TABLO 9: ÖNERİLEN C/T (katalog C/T'nin verinin kendisinden türetilmiş, "
-            "güncellenmesi önerilen alternatifi — Guncelleme_Onerisi=True olan kodlarda katalog "
-            "C/T şüpheli/eski kabul edilmeli)\n" + onerilen_ct.to_csv(index=False)
+            "güncellenmesi önerilen alternatifi)\n" + onerilen_ct.to_csv(index=False)
         )
         kullanilan_metrikler.append("onerilen_ct")
 
-    # --- KRİTİK EKLEME: SATIR BAZLI ETL ÇIKTISI (KRONOLOJİK VERİ) ---
     secilecek_kolonlar = [
         "TARİH", "BAŞLANGIÇ_SAAT", "BİTİŞ_SAAT", "TEZGAH", 
         "KOD & OPE.", "PARÇA NO_ÜRETİM_GİRİLEN", "Durum", 
@@ -169,12 +150,11 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
 
     return "\n\n".join(parcalar), sorted(set(kullanilan_metrikler))
 
-
 baglam, kullanilan_metrikler = _baglam_ve_kullanilan_metrikler(df)
 _sn_baglam = sn_ai_baglami(df)
 if _sn_baglam:
     baglam = baglam + "\n\n" + _sn_baglam
-# Teyit butonu için: AI'a giden tablolarla AYNI compute_* fonksiyonlarından üretilen tablolar
+
 tablolar = tablolari_topla(df)
 formul_bloklari = "\n\n".join(metrik_aciklamasi(k) for k in kullanilan_metrikler)
 
@@ -183,8 +163,7 @@ tablolarına, KRONOLOJİK DETAY tablosuna (TABLO 8) ve METRİK SÖZLÜĞÜ'ne da
 
 KURALLAR:
 1. Her sayısal iddianı, hangi TABLO'dan ve hangi METRİK'ten geldiğini belirterek destekle.
-   Örnek: "AB-07 tezgahının kullanılabilirliği %99.1 (Kullanılabilirlik metriği, TABLO 1)."
-2. Kullanıcı duruş özeti, dakika dakika, parça bazlı veya kronolojik olay sorarsa KESİNLİKLE 'TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI' tablosunu satır satır tara. Operatör kodları yerine gerçek isimleri ("Operator_Kod" sütunu) kullanarak detaylı listele.
+2. Kullanıcı duruş özeti, dakika dakika, parça bazlı veya kronolojik olay sorarsa KESİNLİKLE 'TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI' tablosunu satır satır tara. Operatör kodları yerine gerçek isimleri kullanarak detaylı listele.
 3. Bir duruşu raporlarken Operatör İsmi, Parça, Dakika (Sure_Dakika) ve Sebebini kesinlikle belirt.
 4. Kullanıcı "bunu nasıl hesapladın?", "neden türettin?" veya "hangi formülle buldun?" diye sorarsa, İLGİLİ METRİĞİN TAM FORMÜLÜNÜ VE MANTIĞINI METRİK SÖZLÜĞÜ'nden birebir alıntıla.
 5. Veride olmayan bir şeyi UYDURMA. Emin değilsen açıkça "bu veriyle hesaplanamıyor" de.
@@ -204,9 +183,7 @@ if "sohbet_gecmisi" not in st.session_state:
 def _teyit_ac_kapat(anahtar: str):
     st.session_state[anahtar] = not st.session_state.get(anahtar, False)
 
-
 def _teyit_alani(idx: int):
-    """Asistan cevabının altında 🔍 Teyit et butonu; açıkken cevabı gerçek veriyle doğrular."""
     gecmis = st.session_state.sohbet_gecmisi
     soru_metni = gecmis[idx - 1]["content"] if idx > 0 and gecmis[idx - 1]["role"] == "user" else ""
     anahtar = f"teyit_acik_{idx}"
@@ -216,24 +193,91 @@ def _teyit_alani(idx: int):
     if acik:
         render_teyit(st, soru_metni, gecmis[idx]["content"], df, tablolar, kaynak_notu)
 
+# =============================================================================
+# 1. YÖNETİCİ KISAYOLLARI (SADECE BİR KERE YAZILDI VE UYARILAR TEMİZLENDİ)
+# =============================================================================
+st.markdown("### ⚡ Yönetici Analiz Kısayolları")
+st.caption("Aşağıdaki butonlara tıklayarak temel üretim verilerini saniyeler içinde çekebilirsiniz.")
 
+sekme_parca, sekme_durus, sekme_op = st.tabs(["⚙️ Parçalar (S/N)", "🛑 Duruş ve Set-up", "👷 Operatör ve Tezgah"])
+
+secilen_soru = None
+
+with sekme_parca:
+    s_parca = [
+        "33. haftada toplam kaç adet parça (S/N) üretildi?",
+        "Geçen hafta üretilen parçaların ortalama süresi kaç saatti?",
+        "En hızlı üretilen 5 parça hangisi ve kimler yaptı?",
+        "Bu hafta hangi tezgahta kaç adet parça işlendi?",
+        "Vardiyalara göre üretilen parça (S/N) sayılarının dağılımı nasıldır?",
+        "Hangi parçalarda birden fazla usta çalışarak (iş bölüşerek) üretimi tamamladı?",
+        "Günlük bazda bakarsak, en çok parça hangi gün çıktı?",
+        "Hedeflenen 2.5 saatlik süreye tam uyan veya en yakın olan parçalar hangileri?",
+        "33. haftada işlenen parçaların operatörlere göre dağılımı nasıldır?",
+        "Op 60'ta üretilen parçaların genel ortalama ve medyan süreleri nedir?"
+    ]
+    c1, c2 = st.columns(2)
+    for i, s in enumerate(s_parca):
+        col = c1 if i % 2 == 0 else c2
+        if col.button(s, key=f"p_{i}"):
+            secilen_soru = s
+
+with sekme_durus:
+    s_durus = [
+        "Geçen hafta Op 60'ta toplam kaç saat duruş yaşadık?",
+        "En çok zaman kaybettiğimiz ana duruş sebebi neydi?",
+        "Hangi tezgah arızalar veya beklemeler yüzünden en çok durdu?",
+        "Sadece 'ITEM TEKRARI' yüzünden kaç saat kaybettik ve kimler yaşadı?",
+        "Set-up işlemleri toplam kaç saat tuttu ve ortalama ne kadar sürüyor?",
+        "Operatörlerin sadece sayı girerek yaptığı duruş kayıtları kaç saat?",
+        "Gece vardiyasında (23:00 - 07:00) yaşanan plansız duruşların toplamı kaç saat?",
+        "Tezgah ısınma ve temizlik işlemleri için toplam ne kadar zaman harcandı?",
+        "Geçen hafta duruş süresi en az olan (en sorunsuz çalışan) tezgah hangisiydi?",
+        "Geçen hafta günlere göre duruş süreleri nasıl dağıldı?"
+    ]
+    c1, c2 = st.columns(2)
+    for i, s in enumerate(s_durus):
+        col = c1 if i % 2 == 0 else c2
+        if col.button(s, key=f"d_{i}"):
+            secilen_soru = s
+
+with sekme_op:
+    s_op = [
+        "Bu hafta en çok parça üreten (net üretim adedi en yüksek) usta kim?",
+        "Genel ortalamaya (medyana) göre en hızlı çalışan 3 operatör kim?",
+        "Bu hafta işlem süreleri hedefin (medyan) üstünde kalan operatörlerimiz kimler?",
+        "Yaşar Şenol bu hafta hangi parçaları işledi ve ortalama hızı neydi?",
+        "Gece vardiyası mı daha hızlı çalışmış yoksa gündüz vardiyası mı?",
+        "AB-10 tezgahında toplam kaç parça işlendi ve ortalama işlem hızı nedir?",
+        "AB-06 tezgahının performansı ve Gerçek OEE oranı % kaçtır?",
+        "Özcan Çelik'in tek başına bitirdiği işlerdeki net hızı nedir?",
+        "Hangi operatörler işin yarısını yapıp diğer vardiyaya/ustaya devretti?",
+        "Şu an fabrikada 1 parçayı bitirme hızımızın genel ortalaması (medyan) kaç saat?"
+    ]
+    c1, c2 = st.columns(2)
+    for i, s in enumerate(s_op):
+        col = c1 if i % 2 == 0 else c2
+        if col.button(s, key=f"o_{i}"):
+            secilen_soru = s
+
+st.markdown("---")
+
+# =============================================================================
+# 2. SOHBET GEÇMİŞİ (SADECE BİR KERE YAZILDI)
+# =============================================================================
 for _i, mesaj in enumerate(st.session_state.sohbet_gecmisi):
     with st.chat_message(mesaj["role"]):
         st.markdown(mesaj["content"])
         if mesaj["role"] == "assistant":
             _teyit_alani(_i)
 
-ornek_sorular = [
-    "Bu hafta en çok hangi tezgah durdu ve niye?",
-    "AB-07'nin kullanılabilirliğini nasıl hesapladın?",
-    "Hangi operatör emsallerine göre en yavaş?",
-    "MTBF'i hangi formülle buldun?",
-    "1-9 Ağustos arası duruş özeti ver."
-]
+# =============================================================================
+# 3. CHAT GİRDİSİ VE AI ÇAĞRISI (EN ALTTA)
+# =============================================================================
+soru = st.chat_input("Sorunu manuel yaz veya yukarıdan bir analiz seç...")
+if secilen_soru:
+    soru = secilen_soru
 
-st.caption("Örnek sorular: " + " · ".join(f"*{s}*" for s in ornek_sorular))
-
-soru = st.chat_input("Sorunu yaz...")
 if soru:
     st.session_state.sohbet_gecmisi.append({"role": "user", "content": soru})
     with st.chat_message("user"):
@@ -261,4 +305,4 @@ if soru:
     except Exception as e:
         st.error(f"AI çağrısı başarısız oldu: {e}")
     else:
-        st.rerun()   # cevap geçmişten yeniden çizilsin; böylece "🔍 Teyit et" butonu görünür
+        st.rerun()
