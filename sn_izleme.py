@@ -6,6 +6,7 @@ KURAL: parça adedi S/N'ye göre sayılır. Aynı S/N'nin bütün kayıtları (v
 Pilot: 2547M01G03 (kısa kod M01G03), operasyon 60.
 HAFTA: Perşembe başlar, Çarşamba biter. Hafta no = (tarih − 3 gün)'ün ISO hafta numarası. S/N, tamamlandığı haftaya yazılır.
 SET-UP / DURUŞ: ham veride operasyon numarası değil metin ("60-SETUP", "ITEM TEKRARI") taşırlar; parça+operasyona bağlanırlar.
+SEÇİCİ: "Tümü" seçilirse pilot sınırı olmadan TÜM parça/operasyonların S/N adedi (gün süzgeçli) görünür; tek tek parça/operasyon da seçilebilir.
 """
 from __future__ import annotations
 
@@ -35,13 +36,88 @@ def ad_norm(x) -> str:
     return " ".join(str(x).replace("i", "İ").replace("ı", "I").upper().split())
 
 
+UZUN_HARITA: dict = {}   
+
+
+def _uzun_kolonu(df):
+    for c in df.columns:
+        f = str(c).replace("_", " ").replace("\n", " ").upper().replace("İ", "I")
+        if "UZUN" in f and "REFERANS" in f:
+            return c
+    return None
+
+
+def _ilk_dolu(s) -> str:
+    v = pd.Series(list(s)).dropna().astype(str).str.strip()
+    v = v[(v != "") & (v.str.lower() != "nan")]
+    return v.value_counts().index[0] if len(v) else ""
+
+
+def uzun_haritasi_guncelle(df: pd.DataFrame) -> dict:
+    cu, cp = _uzun_kolonu(df), _kol(df, "PARÇA NO_ÜRETİM_GİRİLEN", "PARÇA NO ÜRETİM GİRİLEN")
+    if not cu or not cp:
+        return UZUN_HARITA
+    d = df[[cp, cu]].dropna().astype(str)
+    d[cp], d[cu] = d[cp].str.strip(), d[cu].str.strip()
+    for kisa, g in d.groupby(cp):
+        uyumlu = g[g[cu].str.endswith(kisa)][cu]
+        sec = _ilk_dolu(uyumlu if len(uyumlu) else g[cu])
+        if sec:
+            UZUN_HARITA[kisa] = sec
+    return UZUN_HARITA
+
+
 def uzun_kod(kisa: str) -> str:
-    return UZUN_KOD_ONEKI.get(kisa, "") + kisa
+    return UZUN_HARITA.get(kisa) or UZUN_KOD_ONEKI.get(kisa, "") + kisa
+
+
+def _p_etiket(p) -> str:
+    uz = UZUN_HARITA.get(str(p))
+    return f"{uz} ({p})" if uz and uz != str(p) else str(p)
+
+
+_TR_KATLA = str.maketrans("İıŞşĞğÜüÖöÇç", "IiSsGgUuOoCc")
+
+
+def uzun_uyumsuz(df: pd.DataFrame, parca="Parça", uzun="Uzun_Ref") -> pd.DataFrame:
+    if parca not in df.columns or uzun not in df.columns:
+        return df.iloc[0:0]
+    u = df[uzun].astype(str).str.strip()
+    ok = df[uzun].notna() & (u != "") & (u.str.lower() != "nan")
+    return df[ok & pd.Series([not a.endswith(str(b)) for a, b in zip(u, df[parca].astype(str))], index=df.index)]
+
+
+def _hay(df: pd.DataFrame, parca="Parça", uzun="Uzun_Ref", op="Operasyon", opno="Op_No", kod="Kod_Ope") -> pd.Series:
+    def g(c):
+        if c not in df.columns:
+            return pd.Series("", index=df.index)
+        x = df[c].astype(str).str.strip()
+        return x.where(~x.str.lower().isin(["nan", "none", "<na>"]), "")
+    p, u, o, n, k = g(parca), g(uzun), g(op), g(opno), g(kod)
+    um = p.map(lambda a: uzun_kod(a) if a else "")          
+    ops = ("§" + o + "§").where(o != "", "") + " " + ("§" + n + "§").where(n != "", "")
+    h = p + " " + u + " " + um + " " + k + " " + ops
+    return h.str.translate(_TR_KATLA).str.upper()
+
+
+_ARA_GURULTU = {"OP", "OPE", "OPERASYON", "PARCA", "KOD", "UZUN", "REFERANS", "REF", "NO", "ARA", "VE", "-", "·", "/"}
+
+
+def _ara_maske(hay: pd.Series, q: str) -> pd.Series:
+    m = pd.Series(True, index=hay.index)
+    for tok in re.split(r"[\s,;·|]+", q.translate(_TR_KATLA).upper().strip()):
+        if not tok or tok in _ARA_GURULTU:
+            continue
+        if tok.isdigit() and len(tok) <= 3:
+            m &= hay.str.contains(rf"§{tok}(?![0-9])", regex=True, na=False)
+        else:
+            m &= hay.str.contains(re.escape(tok), regex=True, na=False)
+    return m
 
 
 def hafta_no(tarih: pd.Series) -> pd.Series:
     w = (tarih - pd.Timedelta(days=3)).dt.isocalendar().week
-    return w.astype("Int64") if w.isna().any() else w.astype(int)   # tarihi boş kayıt varsa <NA>
+    return w.astype("Int64") if w.isna().any() else w.astype(int)   
 
 
 def hafta_baslangic(tarih: pd.Series) -> pd.Series:
@@ -57,7 +133,7 @@ def sn_izleme(df: pd.DataFrame, parca_kisa: str = "M01G03", operasyon: str = "60
     if any(c is None for c in [c_parca, c_op, c_kisi, _kol(df, "Durum"), _kol(df, "Sure_Saat"), _kol(df, "S/N"), _kol(df, "TARİH")]):
         return bos, bos, bos, {"mesaj": "Gerekli kolonlar yok (S/N DB'de olmayabilir)."}
 
-    parca_mask = df[c_parca].astype(str).str.contains(parca_kisa, na=False)
+    parca_mask = df[c_parca].astype(str).str.contains(parca_kisa, na=False, regex=False)
     op_s = df[c_op].astype(str).str.strip()
     kapsam = {"uzun_kod": uzun_kod(parca_kisa), "operasyon": str(operasyon)}
 
@@ -170,7 +246,7 @@ def sn_rota(df: pd.DataFrame, parca_kisa: str = "M01G03", op_adi=lambda k: k) ->
     c_kisi = _kol(df, "Operator_Kod", "OPERATÖR")
     if None in (c_parca, c_op, c_kisi) or "S/N" not in df.columns:
         return pd.DataFrame()
-    u = df[df[c_parca].astype(str).str.contains(parca_kisa, na=False) & (df["Durum"] == "Üretim") & df["S/N"].notna()].copy()
+    u = df[df[c_parca].astype(str).str.contains(parca_kisa, na=False, regex=False) & (df["Durum"] == "Üretim") & df["S/N"].notna()].copy()
     if u.empty:
         return pd.DataFrame()
     u["Op"] = _op_sade(u[c_op])
@@ -187,7 +263,7 @@ def sn_rota(df: pd.DataFrame, parca_kisa: str = "M01G03", op_adi=lambda k: k) ->
     r["Op_Sayisi"] = saat.notna().sum(axis=1)
     r["Ilk_Tarih"] = u.groupby("S/N")["TARİH"].min()
     r["Son_Tarih"] = u.groupby("S/N")["TARİH"].max()
-    diger = df[df["S/N"].isin(r.index) & ~df[c_parca].astype(str).str.contains(parca_kisa, na=False)]
+    diger = df[df["S/N"].isin(r.index) & ~df[c_parca].astype(str).str.contains(parca_kisa, na=False, regex=False)]
     r["Baska_Parca_Kodu"] = diger.groupby("S/N")[c_parca].agg(lambda s: ", ".join(sorted(set(s.astype(str)))))
     sayisal_kolonlar = r.select_dtypes(include=[np.number]).columns
     r[sayisal_kolonlar] = r[sayisal_kolonlar].round(2)
@@ -196,17 +272,13 @@ def sn_rota(df: pd.DataFrame, parca_kisa: str = "M01G03", op_adi=lambda k: k) ->
 
 def parca_duruslari(df: pd.DataFrame, parca_kisa: str = "M01G03", operasyon: str = "60", op_adi=lambda k: k,
                     sadece_op: bool = False) -> pd.DataFrame:
-    """Parçaya yazılmış duruş kayıtları. Ham veride duruş satırında 'OPERASYON NO' alanı çoğunlukla operasyon numarası değil
-    SEBEP METNİ taşır (örn. 'ITEM TEKRARI'; duruşların yalnızca ~%10'unda numara var). Bu yüzden varsayılan olarak parçanın
-    tüm duruşları listelenir ve 'Operasyon_Kaydi' kolonu ilgili operasyona açıkça yazılıp yazılmadığını gösterir.
-    sadece_op=True: yalnızca operasyon numarası açıkça yazılanlar."""
     c_parca = _kol(df, "PARÇA NO_ÜRETİM_GİRİLEN", "PARÇA NO ÜRETİM GİRİLEN")
     c_op = _kol(df, "OPERASYON_NO", "OPERASYON NO")
     c_kisi = _kol(df, "Operator_Kod", "OPERATÖR")
     c_sebep = _kol(df, "Durus_Sebebi_Ham") or c_op
     if None in (c_parca, c_kisi, c_sebep, c_op):
         return pd.DataFrame()
-    d = df[df[c_parca].astype(str).str.contains(parca_kisa, na=False) & df["Durum"].astype(str).str.contains("Duruş")].copy()
+    d = df[df[c_parca].astype(str).str.contains(parca_kisa, na=False, regex=False) & df["Durum"].astype(str).str.contains("Duruş")].copy()
     if d.empty:
         return pd.DataFrame()
     op_txt = d[c_op].astype(str).str.strip()
@@ -227,7 +299,6 @@ def _kolonlar(df):
 
 
 def hafta_listesi(df: pd.DataFrame) -> pd.DataFrame:
-    """Veride kayıt olan haftalar (Perşembe→Çarşamba)."""
     if "TARİH" not in df.columns or df["TARİH"].notna().sum() == 0:
         return pd.DataFrame()
     d = df[df["TARİH"].notna()].copy()
@@ -240,17 +311,20 @@ def hafta_listesi(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def hafta_kayitlari(df: pd.DataFrame, hafta: int, op_adi=lambda k: k) -> pd.DataFrame:
-    """Seçili haftanın TÜM ham kayıtları (operatör adı normalize, parça/operasyon kolonları standart)."""
     c = _kolonlar(df)
     d = df[df["TARİH"].notna() & (hafta_no(df["TARİH"]) == int(hafta)).fillna(False).astype(bool)].copy()
     d["Operatör"] = d[c["kisi"]].map(op_adi).map(ad_norm) if c["kisi"] else None
     d["Parça"] = d[c["parca"]].astype(str).where(d[c["parca"]].notna(), "(parça yok)") if c["parca"] else "(parça yok)"
     d["Operasyon"] = d[c["op"]].astype(str).str.strip() if c["op"] else ""
+    d["Op_No"] = d["Operasyon"].str.extract(r"^(\d+)")[0].fillna(d["Operasyon"])      
+    cu, ck = _uzun_kolonu(df), _kol(df, "KOD & OPE.")
+    uz = d[cu].astype(str).str.strip().where(d[cu].notna(), None) if cu else pd.Series([None] * len(d), index=d.index)
+    d["Uzun_Ref"] = uz.fillna(d["Parça"].map(UZUN_HARITA)).fillna("")
+    d["Kod_Ope"] = d[ck].astype(str).str.strip() if ck else (d["Parça"] + " " + d["Operasyon"])
     return d
 
 
 def hafta_operator_parca(d: pd.DataFrame, ayrinti: bool = True) -> pd.DataFrame:
-    """Operatör × Parça: kim hangi parçada kaç saat (üretim / set-up / duruş / rework / yemek)."""
     if d.empty:
         return pd.DataFrame()
     p = d.pivot_table(index=["Operatör", "Parça"], columns="Durum", values="Sure_Saat", aggfunc="sum", fill_value=0)
@@ -263,13 +337,22 @@ def hafta_operator_parca(d: pd.DataFrame, ayrinti: bool = True) -> pd.DataFrame:
     g = d.groupby(["Operatör", "Parça"])
     r["Kayit"] = g.size()
     if ayrinti:
+        if "S/N" in d.columns:   
+            sn = d[d["S/N"].notna()].groupby(["Operatör", "Parça"])["S/N"]
+            r["SN_Adedi"] = sn.nunique()
+            r["SN_Listesi"] = sn.agg(lambda s: ", ".join(sorted(set(s.astype(str).str.strip()))))
+            r["SN_Adedi"] = r["SN_Adedi"].fillna(0).astype(int)
+            r["SN_Listesi"] = r["SN_Listesi"].fillna("")
         r["Gun_Sayisi"] = g["TARİH"].nunique()
         r["Operasyonlar"] = g["Operasyon"].agg(lambda s: ", ".join(sorted({x for x in s if x and x != "nan"})[:8]))
-    return r.reset_index().sort_values(["Toplam_Sa"], ascending=False).round(2).reset_index(drop=True)
+    out = r.reset_index().sort_values(["Toplam_Sa"], ascending=False).round(2).reset_index(drop=True)
+    if "Uzun_Ref" in d.columns:
+        m = d.groupby("Parça")["Uzun_Ref"].agg(_ilk_dolu)
+        out.insert(out.columns.get_loc("Parça") + 1, "Uzun_Ref", out["Parça"].map(m).fillna(""))
+    return out
 
 
 def hafta_operator_parca_tum(df: pd.DataFrame, op_adi=lambda k: k) -> pd.DataFrame:
-    """AI / teyit için: tüm haftalar, kompakt (Hafta, Operatör, Parça, saatler, kayıt). Yemek hariç."""
     hl = hafta_listesi(df)
     if hl.empty:
         return pd.DataFrame()
@@ -288,7 +371,6 @@ def hafta_operator_parca_tum(df: pd.DataFrame, op_adi=lambda k: k) -> pd.DataFra
 
 
 def hafta_cumleleri(d: pd.DataFrame, hafta: int, bas, bit, pilot_ozet: pd.DataFrame | None = None, uzun: str = "", op: str = "") -> list[str]:
-    """Hafta için düz Türkçe özet cümleleri (patron okusun diye)."""
     if d.empty:
         return ["Bu hafta için kayıt yok."]
     toplam = d["Sure_Saat"].sum()
@@ -303,7 +385,7 @@ def hafta_cumleleri(d: pd.DataFrame, hafta: int, bas, bit, pilot_ozet: pd.DataFr
         c.append(f"Üretimde en çok saat: **{ou.index[0]}** ({ou.iloc[0]:.1f} sa)" + (f", ardından {ou.index[1]} ({ou.iloc[1]:.1f} sa)." if len(ou) > 1 else "."))
     pu = d[d["Durum"] == "Üretim"].groupby("Parça")["Sure_Saat"].sum().sort_values(ascending=False)
     if len(pu):
-        c.append(f"En çok üretim saati harcanan parça: **{pu.index[0]}** ({pu.iloc[0]:.1f} sa)" + (f", sonra {pu.index[1]} ({pu.iloc[1]:.1f} sa)." if len(pu) > 1 else "."))
+        c.append(f"En çok üretim saati harcanan parça: **{_p_etiket(pu.index[0])}** ({pu.iloc[0]:.1f} sa)" + (f", sonra {_p_etiket(pu.index[1])} ({pu.iloc[1]:.1f} sa)." if len(pu) > 1 else "."))
     dk = d[d["Durum"] == "Plansız_Duruş"]
     if len(dk):
         sebep_kol = _kol(dk, "Durus_Kategorisi", "OPERASYON_NO", "OPERASYON NO")
@@ -341,6 +423,182 @@ def sn_tum_analiz(df: pd.DataFrame, parca_kisa: str, operasyon: str, op_adi=lamb
     return t
 
 
+# =========================================================================== TÜMÜ (pilot sınırı yok) + SEÇİCİ
+TUMU = (None, None)
+_SN_ANAHTAR = ["Parça", "Operasyon", "S/N"]
+
+
+def _gun_etiketi(g) -> str:
+    return "Tüm günler" if g is None else f"{g:%d.%m.%Y} {GUN_ADI[g.weekday()]}"
+
+
+def parca_op_secenekleri(df: pd.DataFrame, pilot=PILOT) -> list[tuple]:
+    c_parca = _kol(df, "PARÇA NO_ÜRETİM_GİRİLEN", "PARÇA NO ÜRETİM GİRİLEN")
+    c_op = _kol(df, "OPERASYON_NO", "OPERASYON NO")
+    sayim = pd.Series(dtype=int)
+    if c_parca and c_op and "S/N" in df.columns and "Durum" in df.columns:
+        u = df[(df["Durum"] == "Üretim") & df["S/N"].notna() & df[c_parca].notna() & df[c_op].notna()]
+        if not u.empty:
+            g = pd.DataFrame({"p": u[c_parca].astype(str).str.strip(), "o": u[c_op].astype(str).str.strip(),
+                              "sn": u["S/N"].astype(str).str.strip()}).drop_duplicates()
+            sayim = g.groupby(["p", "o"]).size()
+    sec = [(TUMU, f"📋 Tümü — {len(sayim)} parça/operasyon · {int(sayim.sum())} adet (S/N)")]
+    for k_, o_ in pilot:
+        n = 0
+        if len(sayim):
+            m = (np.asarray(sayim.index.get_level_values(0).str.contains(k_, regex=False))
+                 & np.asarray(sayim.index.get_level_values(1) == str(o_)))
+            n = int(sayim[m].sum())
+        sec.append(((k_, str(o_)), f"{uzun_kod(k_)} — op {o_} · {n} adet"))
+    return sec
+
+
+def sn_tumu(df: pd.DataFrame, op_adi=lambda k: k):
+    bos = pd.DataFrame()
+    c_parca = _kol(df, "PARÇA NO_ÜRETİM_GİRİLEN", "PARÇA NO ÜRETİM GİRİLEN")
+    c_op = _kol(df, "OPERASYON_NO", "OPERASYON NO")
+    c_kisi = _kol(df, "Operator_Kod", "OPERATÖR")
+    c_ct = _kol(df, "ÜRETİM_C/T", "ÜRETİM C/T")
+    if any(c is None for c in [c_parca, c_op, c_kisi, _kol(df, "Durum"), _kol(df, "Sure_Saat"), _kol(df, "S/N"), _kol(df, "TARİH")]):
+        return bos, bos
+    u = df[(df["Durum"] == "Üretim") & df["S/N"].notna() & df[c_parca].notna() & df[c_op].notna()].copy()
+    if u.empty:
+        return bos, bos
+    u["Parça"] = u[c_parca].astype(str).str.strip()
+    u["Operasyon"] = u[c_op].astype(str).str.strip()
+    u["S/N"] = u["S/N"].astype(str).str.strip()
+    cu = _uzun_kolonu(df)
+    uz = u[cu].astype(str).str.strip().where(u[cu].notna(), None) if cu else pd.Series([None] * len(u), index=u.index)
+    u["Uzun_Ref"] = uz.fillna(u["Parça"].map(UZUN_HARITA)).fillna(u["Parça"].map(lambda p: uzun_kod(p) if p in UZUN_KOD_ONEKI else "")).fillna("")
+    u["Operator"] = u[c_kisi].map(op_adi).map(ad_norm)
+    kol = [c for c in ["TARİH", "VARDİYA", "BAŞLANGIÇ_SAAT", "BİTİŞ_SAAT", "TEZGAH", "Operator", "Sure_Saat"] if c in u.columns]
+    sirala = _SN_ANAHTAR + ["TARİH"] + (["BAŞLANGIÇ_SAAT"] if "BAŞLANGIÇ_SAAT" in u.columns else [])
+    detay = u[["Parça", "Uzun_Ref", "Operasyon", "S/N"] + kol].sort_values(sirala).reset_index(drop=True)
+
+    def _birles(s, ayrac):
+        return ayrac.join(dict.fromkeys(s.dropna().astype(str)))
+
+    agg = dict(
+        Toplam_Saat=("Sure_Saat", "sum"), Kayit=("Sure_Saat", "size"),
+        Ilk_Tarih=("TARİH", "min"), Son_Tarih=("TARİH", "max"),
+        Operatorler=("Operator", lambda s: _birles(s, " + ")),
+        Uzun_Ref=("Uzun_Ref", _ilk_dolu),
+    )
+    if "VARDİYA" in u.columns:
+        agg["Vardiyalar"] = ("VARDİYA", lambda s: _birles(s, " + "))
+    if "TEZGAH" in u.columns:
+        agg["Tezgah"] = ("TEZGAH", lambda s: _birles(s, " / "))
+    if c_ct:
+        agg["Katalog_CT"] = (c_ct, "max")
+    ozet = u.groupby(_SN_ANAHTAR).agg(**agg).reset_index()
+    sira_ = [c for c in ozet.columns if c != "Uzun_Ref"]
+    sira_.insert(sira_.index("Parça") + 1, "Uzun_Ref")
+    ozet = ozet[sira_]
+    ozet["Adet"] = 1
+    ozet["Bolunmus_Is"] = ozet["Kayit"] > 1
+    med = ozet.groupby(["Parça", "Operasyon"])["Toplam_Saat"].transform("median")   
+    ozet["Medyana_Gore_%"] = np.where(med > 0, (ozet["Toplam_Saat"] - med) / med * 100, np.nan)
+    if "Katalog_CT" in ozet:
+        ref = ozet["Katalog_CT"].where(ozet["Katalog_CT"] > 0)
+        ozet["Alarm"] = np.where(ref.notna() & (ozet["Toplam_Saat"] > ref * (1 + ALARM_TOLERANS)), "🔴 Yavaş", "🟢 Normal")
+    ozet["Hafta"] = hafta_no(ozet["Son_Tarih"])
+    ozet = ozet.sort_values(["Son_Tarih", "Parça", "Operasyon", "S/N"]).reset_index(drop=True)
+    return ozet.round({"Toplam_Saat": 2, "Medyana_Gore_%": 1}), detay.round({"Sure_Saat": 2})
+
+
+def sn_tumu_parca_ozeti(ozet: pd.DataFrame) -> pd.DataFrame:
+    if ozet is None or ozet.empty:
+        return pd.DataFrame()
+    ek_ = {"Uzun_Ref": ("Uzun_Ref", _ilk_dolu)} if "Uzun_Ref" in ozet.columns else {}
+    g = ozet.groupby(["Parça", "Operasyon"]).agg(
+        SN_Adedi=("S/N", "nunique"), Toplam_Uretim_Sa=("Toplam_Saat", "sum"), Ort_Sure_Sa=("Toplam_Saat", "mean"),
+        Medyan_Sure_Sa=("Toplam_Saat", "median"), Bolunmus=("Bolunmus_Is", "sum"),
+        Ilk_Tarih=("Ilk_Tarih", "min"), Son_Tarih=("Son_Tarih", "max"), **ek_,
+    ).reset_index()
+    if "Uzun_Ref" in g.columns:
+        k_ = [c for c in g.columns if c != "Uzun_Ref"]
+        k_.insert(k_.index("Parça") + 1, "Uzun_Ref")
+        g = g[k_]
+    return g.sort_values(["SN_Adedi", "Parça", "Operasyon"], ascending=[False, True, True]) \
+        .round({"Toplam_Uretim_Sa": 1, "Ort_Sure_Sa": 2, "Medyan_Sure_Sa": 2}).reset_index(drop=True)
+
+
+def _tum_sn_gorunumu(st, df, op_adi, tablo):
+    ozet, detay = sn_tumu(df, op_adi)
+    if ozet.empty:
+        st.info("Seçili filtrelerde S/N'li üretim kaydı yok.")
+        return
+    st.markdown("### 📋 Tüm parça / operasyonlar — S/N bazlı adet")
+    st.caption("Her satır 1 adet = parça + operasyon + seri numarası. Bir gün seçerseniz o günün tüm S/N'leri listelenir; "
+               "tek bir parça/operasyona bakmak için yukarıdaki seçiciden onu seçin ya da aşağıdan süzün.")
+    pairs = sn_tumu_parca_ozeti(ozet)
+    pair_etiket = {(p, o): f"{_p_etiket(p)} — op {o} ({int(n)} adet)" for p, o, n in zip(pairs["Parça"], pairs["Operasyon"], pairs["SN_Adedi"])}
+    gunler = sorted((pd.Timestamp(g) for g in detay["TARİH"].dt.normalize().dropna().unique()), reverse=True)
+
+    f1, f2 = st.columns([2, 3])
+    gun = f1.selectbox("Gün", [None] + gunler, format_func=_gun_etiketi, key="sn_tum_gun")
+    olcu = f2.radio("Gün ölçüsü", ["Tamamlandığı gün", "O gün kaydı olan"], horizontal=True, key="sn_tum_olcu", disabled=gun is None,
+                    help="Tamamlandığı gün: S/N'nin son kaydı o gün girilenler (adet bu güne yazılır). "
+                         "O gün kaydı olan: o gün üzerinde çalışılan tüm S/N'ler (başka güne devredenler dahil).")
+    secili = st.multiselect("Parça / operasyon (boş bırakırsanız hepsi)", list(pair_etiket), format_func=lambda a: pair_etiket[a], key="sn_tum_pairs")
+    g1, g2, g3 = st.columns([2, 2, 3])
+    opsec = g1.selectbox("Operatör", ["Tümü"] + sorted(detay["Operator"].dropna().unique().tolist()), key="sn_tum_op")
+    ara = g2.text_input("S/N ara", key="sn_tum_ara", placeholder="örn. 2G7J")
+    kod_ara = g3.text_input("🔎 Ara: parça · uzun referans · operasyon", key="sn_tum_kod",
+                            placeholder="örn. 2547M01G03   ·   M01G03 60   ·   2547M01G03 op 60",
+                            help="Kısa kod (M01G03), uzun referans (2547M01G03 ya da sadece 2547) ve operasyon (60) birlikte yazılabilir; 'op' kelimesi yazmak zorunda değilsiniz.")
+
+    x = ozet
+    if gun is not None:
+        if olcu.startswith("Tamam"):
+            x = x[x["Son_Tarih"].dt.normalize() == gun]
+        else:
+            gk = detay.loc[detay["TARİH"].dt.normalize() == gun, _SN_ANAHTAR].drop_duplicates()
+            x = x.merge(gk, on=_SN_ANAHTAR, how="inner")
+    if secili:
+        ps = set(secili)
+        x = x[np.fromiter(((p, o) in ps for p, o in zip(x["Parça"], x["Operasyon"])), dtype=bool, count=len(x))]
+    if opsec != "Tümü":
+        x = x.merge(detay.loc[detay["Operator"] == opsec, _SN_ANAHTAR].drop_duplicates(), on=_SN_ANAHTAR, how="inner")
+    if ara:
+        x = x[x["S/N"].astype(str).str.contains(ara, case=False, na=False, regex=False)]
+    if kod_ara:
+        x = x[_ara_maske(_hay(x), kod_ara)]
+    x = x.reset_index(drop=True)
+
+    if x.empty:
+        st.info("Süzgeçlere uyan S/N yok.")
+    else:
+        _uy = uzun_uyumsuz(x)
+        if len(_uy):
+            st.warning(f"⚠️ {len(_uy)} S/N'de kısa kod ile uzun referans uyuşmuyor (örn. {_uy.iloc[0]['Parça']} ↔ {_uy.iloc[0]['Uzun_Ref']}); "
+                       "Uzun Referans sütununa bakın, giriş hatası olabilir.")
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("📦 Adet (S/N)", len(x), help="Parça + operasyon + seri numarası sayısı. Aynı S/N farklı operasyonlarda ayrı adet sayılır.")
+        k2.metric("🔩 Parça/operasyon", len(x[["Parça", "Operasyon"]].drop_duplicates()))
+        k3.metric("⚖️ Bölünerek yapılan", int(x["Bolunmus_Is"].sum()))
+        k4.metric("⏱️ Toplam süre", f"{x['Toplam_Saat'].sum():.1f} sa")
+        st.caption(f"{_gun_etiketi(gun)}" + ("" if gun is None else f" ({olcu.lower()})") + f" · {len(x)} / {len(ozet)} adet gösteriliyor.")
+        st.markdown("**Parça / operasyon bazında adet**")
+        tablo(sn_tumu_parca_ozeti(x))
+        st.markdown("**Tüm S/N'ler**")
+        tablo(x)
+        st.download_button("⬇️ Listelenen S/N'ler (CSV)", x.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="tum_sn_listesi.csv", mime="text/csv", key="dl_tum_sn")
+        if gun is not None:
+            with st.expander(f"🧾 {_gun_etiketi(gun)} günü ham kayıtları (listelenen S/N'lere ait)"):
+                tablo(detay[detay["TARİH"].dt.normalize() == gun].merge(x[_SN_ANAHTAR], on=_SN_ANAHTAR, how="inner"))
+
+    st.markdown("---")
+    with st.expander("📅 Gün ve hafta özeti (tüm parça/operasyonlar)"):
+        st.markdown("**Gün bazlı adet (tamamlanma tarihine göre)**")
+        tablo(sn_gunluk(ozet).drop(columns=["Ort_Sure_Sa"], errors="ignore"))
+        st.markdown("**Hafta özeti (Perşembe→Çarşamba)**")
+        tablo(sn_hafta_ozeti(ozet, None).drop(columns=["Setup_Sa", "Ort_Sure_Sa", "Medyan_Sure_Sa"], errors="ignore"))
+    st.markdown("---")
+    _hafta_detayi(st, df, {"ozet": ozet}, op_adi, None, None, tablo)
+
+
 _AI_TABLOLAR = [
     ("ozet", 10, "S/N BAZLI ADET — her satır 1 ADET. Toplam_Saat = S/N'nin tüm kayıtları; Bolunmus_Is=True: birden fazla kayıt; "
                  "Alarm: Katalog_CT'yi %{tol} aşarsa Yavaş; Hafta Perşembe→Çarşamba, S/N tamamlandığı (Son_Tarih) haftaya yazılır"),
@@ -359,6 +617,7 @@ _AI_TABLOLAR = [
 
 
 def sn_ai_baglami(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k) -> str:
+    uzun_haritasi_guncelle(df)
     parcalar = []
     for kisa, op in pilot:
         t = sn_tum_analiz(df, kisa, op, op_adi)
@@ -399,11 +658,13 @@ SN_AI_KURALI = (
     "7. ÜSLUP KURALI: Asla 'fırlamış', 'bozmuş', 'çakılmış', 'maalesef' gibi duygusal, abartılı veya yorum içeren kelimeler kullanma. "
     "Verileri tamamen objektif, kurumsal ve istatistiksel bir dille ifade et (Örn: 'artış göstermiştir', 'sapma gözlemlenmiştir'). Kullanıcıya hitap sözcüğü kullanma.\n"
     "8. MATEMATİK KURALI: Tablolardaki genel toplam, ortalama veya oranları (örneğin aylık ortalama) kendin hesaplamaya çalışma, doğrudan tablodaki hazır değeri oku. Ancak kullanıcı spesifik olarak 'şu 3 parçanın ortalamasını al' gibi basit bir aritmetik işlem isterse, işlemi açıkça göstererek yap (Örn: '3.0 + 2.5 + 3.5 = 9.0 saat, 9.0 / 3 = 3.0 saat')."
+    "\n9. SÜTUN KARIŞTIRMA YASAĞI (KRİTİK): 'S/N' (Seri Numarası) ile 'Parça Kodu'nu (örn: M01G03) ASLA birbirine karıştırma! Kullanıcı senden S/N listesi istediğinde, KESİNLİKLE 'S/N' kolonundaki (genellikle 2G... veya 2H... ile başlayan) spesifik kodları ver. Parça kodunu S/N imiş gibi cevaplara yazma.\n"
+    "10. PARÇA KODU: Uzun referans (örn. 2547M01G03) ile kısa kod (M01G03) AYNI parçadır; kullanıcı hangisini yazarsa yazsın TABLO 21'de 'Uzun_Ref' ve 'Parça' kolonlarında ara. "
+    "'M01G03 60' = parça M01G03, operasyon 60 (KOD & OPE.)."
 )
 
 
 # =========================================================================== EKRAN: okunabilir görünüm katmanı
-# Ana veri (AI / teyit / indirme) teknik adlarını korur; yalnızca ekranda gösterirken sade adlar kullanılır.
 _COL = {
     "S/N": "Seri No (S/N)", "Toplam_Saat": "Toplam Süre (sa)", "Kayit": "Kayıt Sayısı", "Ilk_Tarih": "İlk Kayıt", "Son_Tarih": "Tamamlanma",
     "Operatorler": "Çalışanlar", "Vardiyalar": "Vardiya(lar)", "Tezgah": "Tezgah", "Katalog_CT": "Katalog Süresi (sa)", "Adet": "Adet",
@@ -419,12 +680,12 @@ _COL = {
     "Operasyon_Kaydi": "Operasyon Bilgisi", "Parça": "Parça", "Uretim_Sa": "Üretim (sa)", "Set_Up_Sa": "Set-up (sa)",
     "Plansiz_Durus_Sa": "Plansız Duruş (sa)", "Rework_Sa": "Rework (sa)", "Yemek_Sa": "Yemek/Mola (sa)", "Toplam_Sa": "Toplam (sa)",
     "Gun_Sayisi": "Çalıştığı Gün", "Operasyonlar": "Operasyon No / Metin", "Grup": "Grup",
+    "Operasyon": "Operasyon No", "SN_Adedi": "Adet (S/N sayısı)", "SN_Listesi": "Seri Numaraları (S/N)",
 }
 _DEGER = {"🔴 Yavaş": "🔴 Katalog süresini aştı", "🟢 Normal": "🟢 Katalog süresi içinde", True: "Evet", False: "Hayır"}
 
 
 def gorsel(tablo: pd.DataFrame, ek: dict | None = None) -> pd.DataFrame:
-    """Ekran için sade kolon adları, okunur tarih/evet-hayır. Ana veriyi DEĞİŞTİRMEZ (kopya döner)."""
     if tablo is None or tablo.empty:
         return tablo
     t = tablo.copy()
@@ -445,11 +706,12 @@ def gorsel(tablo: pd.DataFrame, ek: dict | None = None) -> pd.DataFrame:
     return t.rename(columns=ren)
 
 
+_COL.update({"Uzun_Ref": "Uzun Referans (Parça No)", "Kod_Ope": "Kod & Operasyon", "Op_No": "Operasyon No", "Parça": "Parça (kısa kod)"})
+
 _OP_EK = {"Kayit": "İşlem Kaydı", "Toplam_Saat": "Toplam Çalışma (sa)", "Ilk_Tarih": "İlk Çalıştığı Gün", "Son_Tarih": "Son Çalıştığı Gün"}
 
 
 def ozet_cumleleri(t: dict, veri_aralik=None) -> list[str]:
-    """Patron için düz Türkçe genel özet (tablolardan türetilir; ek bir hesap sayısı uydurmaz)."""
     k, o = t["kapsam"], t["ozet"]
     c = []
     c.append(f"**{k['uzun_kod']}** parçasının **{k['operasyon']}. operasyonunda** {o['Ilk_Tarih'].min():%d.%m.%Y} – {o['Son_Tarih'].max():%d.%m.%Y} "
@@ -489,26 +751,32 @@ def ozet_cumleleri(t: dict, veri_aralik=None) -> list[str]:
 def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
     import streamlit as st
 
+    uzun_haritasi_guncelle(df)   
+
     if "S/N" not in df.columns:
         st.error("Veride **S/N** kolonu yok. config.CANONICAL_COLUMNS + ETL'e S/N eklenmeden bu sekme ve AI S/N sorularına cevap veremez.")
         return
-    secenek = [f"{uzun_kod(k)} — op {o}" for k, o in pilot]
-    i = st.selectbox("Parça / operasyon", range(len(pilot)), format_func=lambda x: secenek[x], key="sn_parca")
-    kisa, op = pilot[i]
+    secenekler = parca_op_secenekleri(df, pilot)
+    etiketler = dict(secenekler)
+    secim = st.selectbox("Parça / operasyon", [s[0] for s in secenekler], format_func=lambda a: etiketler[a], key="sn_parca")
+
+    def tablo(df_, ek=None, **kw):
+        st.dataframe(gorsel(df_, ek), use_container_width=True, hide_index=True, **kw)
+
+    if secim == TUMU:   
+        _tum_sn_gorunumu(st, df, op_adi, tablo)
+        return
+    kisa, op = secim
     t = sn_tum_analiz(df, kisa, op, op_adi)
     ozet, detay, setup, k = t["ozet"], t["detay"], t["setup"], t["kapsam"]
     if ozet.empty:
         st.info("Seçili filtrelerde bu parça/operasyon için S/N'li üretim kaydı yok.")
         return
 
-    def tablo(df_, ek=None, **kw):
-        st.dataframe(gorsel(df_, ek), use_container_width=True, hide_index=True, **kw)
-
     def indir(tab, ad, anahtar):
         st.download_button(f"⬇️ {ad} (CSV)", tab.to_csv(index=False).encode("utf-8-sig"),
                            file_name=f"{uzun_kod(kisa)}_op{op}_{anahtar}.csv", mime="text/csv", key=f"dl_{anahtar}")
 
-    # ------------------------------------------------------------ ÜST: kartlar + düz Türkçe özet + okuma rehberi
     st.markdown("### 📈 Genel Üretim Özeti")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("📦 Tamamlanan Adet", f"{k['sn_sayisi']}", help="Adet = farklı seri numarası (S/N) sayısı. Aynı parçanın birden fazla kaydı 1 adet sayılır.")
@@ -536,7 +804,6 @@ def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
     sek = st.tabs(["📅 Hafta & Gün", "📦 Parçalar (S/N)", "🔎 Tek Parçayı Doğrula", "🧭 Parça Rotası (A→Z)", "👷 Operatör",
                    "🕒 Vardiya", "🏭 Tezgah", "🛠️ Set-up & Duruş", "🤖 AI'a giden veri"])
 
-    # ------------------------------------------------------------ 1) HAFTA & GÜN (+ hafta detayı)
     with sek[0]:
         st.caption("Önce özet tablolar (seçili parça), altta bir haftayı seçip o haftada fabrikada ne olduğuna tek tek bakabilirsiniz.")
         st.markdown("**Hafta özeti (Perşembe→Çarşamba)**")
@@ -547,15 +814,18 @@ def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
         st.markdown("---")
         _hafta_detayi(st, df, t, op_adi, kisa, op, tablo)
 
-    # ------------------------------------------------------------ 2) PARÇALAR
     with sek[1]:
         st.caption("Her satır 1 adet. Aşağıdaki süzgeçlerle istediğiniz parçalara bakın.")
-        f1, f2, f3, f4 = st.columns([2, 2, 1, 1])
+        f0, f1, f2, f3, f4 = st.columns([2, 2, 2, 1, 1])
+        gunler_ = sorted((pd.Timestamp(g) for g in ozet["Son_Tarih"].dt.normalize().dropna().unique()), reverse=True)
+        gun_ = f0.selectbox("Tamamlandığı gün", [None] + gunler_, format_func=_gun_etiketi, key="sn_adet_gun")
         ara = f1.text_input("S/N ara", key="sn_ara", placeholder="örn. 2G7J")
         opsec = f2.selectbox("Operatör", ["Tümü"] + sorted(detay["Operator"].dropna().unique().tolist()), key="sn_adet_op")
         sadece_bol = f3.checkbox("Sadece bölünenler", key="sn_bol")
         sadece_yav = f4.checkbox("Sadece katalogu aşanlar", key="sn_yav")
         x = ozet
+        if gun_ is not None:
+            x = x[x["Son_Tarih"].dt.normalize() == gun_]
         if ara:
             x = x[x["S/N"].astype(str).str.contains(ara, case=False, na=False)]
         if opsec != "Tümü":
@@ -568,7 +838,6 @@ def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
         tablo(x)
         indir(ozet, "Tüm parçalar", "sn")
 
-    # ------------------------------------------------------------ 3) TEK PARÇA DOĞRULA
     with sek[2]:
         st.caption("Bir parçanın ham kayıtlarını görüp toplamı kendiniz doğrulayın.")
         tum_operatorler = ["Tümü"] + sorted(detay["Operator"].dropna().unique().tolist())
@@ -585,7 +854,6 @@ def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
             tablo(t["rota"][t["rota"]["S/N"] == sn])
         indir(detay, "Tüm parça kayıtları", "detay")
 
-    # ------------------------------------------------------------ 4) ROTA
     with sek[3]:
         with st.expander("ℹ️ Bu sekme ne gösteriyor?"):
             st.info("Bir parçanın fabrikadaki yolculuğu: her operasyonda kaç saat harcandı ve kim yaptı. "
@@ -593,7 +861,6 @@ def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
         tablo(t["rota"])
         indir(t["rota"], "Parça rotası", "rota")
 
-    # ------------------------------------------------------------ 5-7) OPERATÖR / VARDİYA / TEZGAH
     medyan_cumle = f"Karşılaştırma ölçüsü: adet başına süre; parçaların medyanı {k['medyan_saat']:.2f} sa."
     with sek[4]:
         with st.expander("ℹ️ Nasıl okunur?"):
@@ -613,7 +880,6 @@ def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
         st.caption(medyan_cumle)
         tablo(t["tezgah"], _OP_EK)
 
-    # ------------------------------------------------------------ 8) SET-UP & DURUŞ
     with sek[7]:
         st.markdown(f"**Set-up (op {op}, toplam {k['setup_saat']:.1f} sa)**")
         tablo(setup)
@@ -624,14 +890,12 @@ def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
         d_ = t["durus"] if dsec.startswith("Parçanın") else parca_duruslari(df, kisa, op, op_adi, sadece_op=True)
         tablo(d_)
 
-    # ------------------------------------------------------------ 9) AI
     with sek[8]:
         st.caption("Asistan bu metni okuyor; yukarıdaki tablolarla birebir aynı veri.")
         st.code(sn_ai_baglami(df, pilot, op_adi), language="csv")
 
 
 def _hafta_detayi(st, df, t, op_adi, kisa, op, tablo):
-    """Seçili haftada ne olmuş: filtreler, günlük grafik, operatör×parça, tezgah, parça, ham kayıtlar."""
     st.markdown("### 🔍 Hafta Detayı — seçtiğiniz haftada ne olmuş?")
     hl = hafta_listesi(df)
     if hl.empty:
@@ -640,41 +904,59 @@ def _hafta_detayi(st, df, t, op_adi, kisa, op, tablo):
     etiket = {int(r.Hafta): f"Hafta {int(r.Hafta)} · {r.Hafta_Baslangic:%d.%m} – {r.Hafta_Bitis:%d.%m.%Y} · {int(r.Kayit)} kayıt" for r in hl.itertuples()}
     h1, h2 = st.columns([2, 2])
     hafta = h1.selectbox("Hafta", list(etiket), format_func=lambda w: etiket[w], key="sn_hf_sec")
-    kapsam = h2.radio("Kapsam", ["Tüm fabrika", f"Yalnızca {uzun_kod(kisa)} (tüm operasyonları)"], horizontal=True, key="sn_hf_kapsam")
+    if kisa:
+        kapsam = h2.radio("Kapsam", ["Tüm fabrika", f"Yalnızca {uzun_kod(kisa)} (tüm operasyonları)"], horizontal=True, key="sn_hf_kapsam")
+    else:   
+        kapsam = "Tüm fabrika"
     satir = hl[hl["Hafta"] == hafta].iloc[0]
     bas, bit = satir["Hafta_Baslangic"], satir["Hafta_Bitis"]
     d = hafta_kayitlari(df, hafta, op_adi)
     if kapsam.startswith("Yalnızca"):
-        d = d[d["Parça"].astype(str).str.contains(kisa, na=False)]
+        d = d[d["Parça"].astype(str).str.contains(kisa, na=False, regex=False)]
     if d.empty:
         st.info("Bu kapsamda kayıt yok.")
         return
 
-    for cumle in hafta_cumleleri(d, hafta, bas, bit, t.get("ozet"), uzun_kod(kisa), op):
+    for cumle in hafta_cumleleri(d, hafta, bas, bit, t.get("ozet") if kisa else None, uzun_kod(kisa) if kisa else "", op or ""):
         st.markdown(f"- {cumle}")
 
-    # ---- filtreler (screenshot'taki gibi): Durum / Tezgah / Operatör / Parça-kod ara
     st.caption("Süzgeçler aşağıdaki grafik ve tüm tablolara uygulanır.")
     kx = f"sn_hf_{hafta}_{'f' if kapsam.startswith('Tüm') else 'p'}"
     durumlar = [x for x in DURUM_SIRASI if x in set(d["Durum"].dropna())] + sorted(set(d["Durum"].dropna()) - set(DURUM_SIRASI))
     tezgahlar = sorted(d["TEZGAH"].dropna().astype(str).unique()) if "TEZGAH" in d.columns else []
     operatorler = sorted(d["Operatör"].dropna().unique())
-    f1, f2, f3, f4 = st.columns([2, 2, 3, 2])
+    f1, f2, f3 = st.columns([2, 2, 3])
     s_durum = f1.multiselect("Durum", durumlar, default=durumlar, key=kx + "_d")
     s_tez = f2.multiselect("Tezgah", tezgahlar, default=tezgahlar, key=kx + "_t")
     s_op = f3.multiselect("Operatör", operatorler, default=operatorler, key=kx + "_o")
-    s_ara = f4.text_input("Parça / kod ara", key=kx + "_a", placeholder="örn. M14P04")
+    p_say = d.groupby("Parça").size().sort_values(ascending=False)
+    uz_map = d.groupby("Parça")["Uzun_Ref"].agg(_ilk_dolu)
+    p_etk = {p_: (f"{uz_map.get(p_)} ({p_}) · {n_} kayıt" if uz_map.get(p_) and uz_map.get(p_) != p_ else f"{p_} · {n_} kayıt") for p_, n_ in p_say.items()}
+    g1, g2, g3 = st.columns([3, 2, 3])
+    s_parca = g1.multiselect("Parça (uzun referans · kısa kod) — boşsa hepsi", list(p_etk), format_func=lambda p_: p_etk[p_], key=kx + "_p")
+    d_p = d[d["Parça"].isin(s_parca)] if s_parca else d
+    op_sec = sorted(d_p["Op_No"].dropna().astype(str).unique(), key=lambda z: (not z.isdigit(), int(z) if z.isdigit() else 0, z))
+    s_opn = g2.multiselect("Operasyon (60, 20 …; SETUP dahil) — boşsa hepsi", op_sec, key=kx + "_opn")
+    s_ara = g3.text_input("Ara: parça · uzun referans · operasyon", key=kx + "_a", placeholder="örn. 2547M01G03   veya   M01G03 60")
+    
     x = d[d["Durum"].isin(s_durum) & d["Operatör"].isin(s_op)]
     if tezgahlar:
         x = x[x["TEZGAH"].astype(str).isin(s_tez)]
+    if s_parca:
+        x = x[x["Parça"].isin(s_parca)]
+    if s_opn:
+        x = x[x["Op_No"].astype(str).isin(s_opn)]
     if s_ara:
-        x = x[x["Parça"].astype(str).str.contains(s_ara, case=False, na=False) | x["Operasyon"].astype(str).str.contains(s_ara, case=False, na=False)]
+        x = x[_ara_maske(_hay(x), s_ara)]
     st.caption(f"{len(x)} kayıt · toplam {x['Sure_Saat'].sum():.2f} saat")
+    _uy = uzun_uyumsuz(x)
+    if len(_uy):
+        st.warning(f"⚠️ {len(_uy)} kayıtta kısa kod ile uzun referans uyuşmuyor (örn. {_uy.iloc[0]['Parça']} ↔ {_uy.iloc[0]['Uzun_Ref']}). "
+                   "Parça aramasında kısa kod esas alınır; bu kayıtlar 'Tüm kayıtlar' sekmesinde Uzun Referans sütunundan görülebilir.")
     if x.empty:
         st.info("Süzgeçlere uyan kayıt yok.")
         return
 
-    # ---- günlük durum grafiği
     gun = pd.date_range(bas, bit, freq="D")
     g = x.groupby([x["TARİH"].dt.normalize(), "Durum"])["Sure_Saat"].sum().unstack(fill_value=0).reindex(gun, fill_value=0)
     kolonlar = [c for c in DURUM_SIRASI if c in g.columns] + [c for c in g.columns if c not in DURUM_SIRASI]
@@ -687,8 +969,9 @@ def _hafta_detayi(st, df, t, op_adi, kisa, op, tablo):
         st.bar_chart(g, height=260)
 
     sub = st.tabs(["👷 Operatör × Parça", "👤 Operatör", "🏭 Tezgah", "🔩 Parça", "📦 Tamamlanan S/N", "🧾 Tüm kayıtlar"])
+    
     with sub[0]:
-        st.caption("Kim hangi parçada kaç saat çalıştı (üretim, set-up, duruş ayrı).")
+        st.caption("Kim hangi parçada kaç saat çalıştı (üretim, set-up, duruş ayrı). S/N sütunları: o operatörün o parçada kaydı bulunan seri numaraları.")
         op_parca = hafta_operator_parca(x)
         tablo(op_parca)
         st.download_button("⬇️ Operatör × Parça (CSV)", op_parca.to_csv(index=False).encode("utf-8-sig"),
@@ -696,38 +979,60 @@ def _hafta_detayi(st, df, t, op_adi, kisa, op, tablo):
         with st.expander("Isı haritası: operatör (satır) × parça (sütun) — toplam saat"):
             piv = op_parca.pivot_table(index="Operatör", columns="Parça", values="Toplam_Sa", aggfunc="sum", fill_value=0).round(1)
             st.dataframe(piv, use_container_width=True)
+            
     with sub[1]:
         p = x.pivot_table(index="Operatör", columns="Durum", values="Sure_Saat", aggfunc="sum", fill_value=0)
         p["Toplam"] = p.sum(axis=1)
-        p["Parça Sayısı"] = x.groupby("Operatör")["Parça"].nunique()
+        # BURASI DEĞİŞTİ: Parça kodunu değil, fiziksel S/N adedini sayar
+        if "S/N" in x.columns:
+            p["İşlenen S/N Adedi"] = x.groupby("Operatör")["S/N"].nunique()
+        else:
+            p["İşlem Gören Parça Kodu"] = x.groupby("Operatör")["Parça"].nunique()
         p["Çalıştığı Gün"] = x.groupby("Operatör")["TARİH"].nunique()
         st.dataframe(p.sort_values("Toplam", ascending=False).round(2).reset_index(), use_container_width=True, hide_index=True)
+        
     with sub[2]:
         if "TEZGAH" in x.columns:
             p = x.pivot_table(index="TEZGAH", columns="Durum", values="Sure_Saat", aggfunc="sum", fill_value=0)
             p["Toplam"] = p.sum(axis=1)
             p["Operatör Sayısı"] = x.groupby("TEZGAH")["Operatör"].nunique()
-            p["Parça Sayısı"] = x.groupby("TEZGAH")["Parça"].nunique()
+            # BURASI DEĞİŞTİ: Tezgahtan geçen fiziksel S/N adedini sayar
+            if "S/N" in x.columns:
+                p["İşlenen S/N Adedi"] = x.groupby("TEZGAH")["S/N"].nunique()
+            else:
+                p["İşlem Gören Parça Kodu"] = x.groupby("TEZGAH")["Parça"].nunique()
             st.dataframe(p.sort_values("Toplam", ascending=False).round(2).reset_index(), use_container_width=True, hide_index=True)
+            
     with sub[3]:
         p = x.pivot_table(index="Parça", columns="Durum", values="Sure_Saat", aggfunc="sum", fill_value=0)
         p["Toplam"] = p.sum(axis=1)
         p["Operatör Sayısı"] = x.groupby("Parça")["Operatör"].nunique()
         p["Kayıt"] = x.groupby("Parça").size()
+        # BURASI EKLENDİ: Parça bazında net fiziksel üretilen adet (S/N)
+        if "S/N" in x.columns:
+            p["Tamamlanan S/N Adedi"] = x.groupby("Parça")["S/N"].nunique()
+        p.insert(0, "Uzun Referans", p.index.map(x.groupby("Parça")["Uzun_Ref"].agg(_ilk_dolu)))
         st.dataframe(p.sort_values("Toplam", ascending=False).round(2).reset_index(), use_container_width=True, hide_index=True)
+        
     with sub[4]:
         o = t.get("ozet")
         if o is not None and not o.empty:
             w = o[o["Hafta"] == hafta]
-            st.caption(f"{uzun_kod(kisa)} op {op}: bu hafta tamamlanan {len(w)} adet (süzgeçlerden bağımsız).")
+            st.caption((f"{uzun_kod(kisa)} op {op}" if kisa else "Tüm parça/operasyonlar") + f": bu hafta tamamlanan {len(w)} adet (süzgeçlerden bağımsız).")
             tablo(w)
         else:
             st.info("Seçili parça için S/N verisi yok.")
+            
     with sub[5]:
-        kol = [c for c in ["TARİH", "VARDİYA", "BAŞLANGIÇ_SAAT", "BİTİŞ_SAAT", "TEZGAH", "Operatör", "Parça", "Operasyon", "Durum",
+        kol = [c for c in ["TARİH", "VARDİYA", "BAŞLANGIÇ_SAAT", "BİTİŞ_SAAT", "TEZGAH", "Operatör", "Parça", "Uzun_Ref", "Operasyon", "Kod_Ope", "Durum",
                            "Durus_Kategorisi", "Durus_Sebebi_Ham", "Sure_Saat", "ÜRETİM_C/T", "Sapma_Yuzdesi", "S/N"] if c in x.columns]
-        ek = {"Parça": "Parça No", "Operasyon": "Operasyon No", "Durus_Kategorisi": "Duruş Kategorisi", "Durus_Sebebi_Ham": "Duruş Sebebi",
+        ek = {"Parça": "Parça No (kısa)", "Operasyon": "Operasyon No", "Durus_Kategorisi": "Duruş Kategorisi", "Durus_Sebebi_Ham": "Duruş Sebebi",
               "ÜRETİM_C/T": "Hedef C/T (sa)", "Sapma_Yuzdesi": "Sapma %"}
-        tablo(x[kol].sort_values(["TARİH"] + (["BAŞLANGIÇ_SAAT"] if "BAŞLANGIÇ_SAAT" in kol else [])), ek)
-        st.download_button("⬇️ Bu haftanın kayıtları (CSV)", x[kol].to_csv(index=False).encode("utf-8-sig"),
+        
+        # BURASI DEĞİŞTİ: Tamamen boş olan (None, NaN) "Başlangıç Saati" gibi kolonları ekrandan otomatik gizler
+        df_gosterim = x[kol].copy().dropna(axis=1, how='all')
+        sirala_kolonu = ["TARİH"] + (["BAŞLANGIÇ_SAAT"] if "BAŞLANGIÇ_SAAT" in df_gosterim.columns else [])
+        
+        tablo(df_gosterim.sort_values(sirala_kolonu), ek)
+        st.download_button("⬇️ Bu haftanın kayıtları (CSV)", df_gosterim.to_csv(index=False).encode("utf-8-sig"),
                            file_name=f"hafta{hafta}_kayitlar.csv", mime="text/csv", key=kx + "_dl2")

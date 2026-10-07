@@ -49,42 +49,118 @@ with st.expander("📖 Kullanılan Tüm Metrik ve Formüller Sözlüğü", expan
 
 st.markdown("---")
 
-# ---------------------------------------------------------------- API AYARLARI
+# ---------------------------------------------------------------- API AYARLARI (GROQ)
 import os
+import re
 from dotenv import load_dotenv
 
 try:
-    import google.generativeai as genai
+    from groq import Groq
 except ImportError:
-    st.error("`google-generativeai` kurulu değil. Kurulum: `pip install google-generativeai`")
+    st.error("`groq` kurulu değil. Kurulum: `pip install groq python-dotenv`")
     st.stop()
 
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not GEMINI_API_KEY:
-    st.error("HATA: .env dosyasında GEMINI_API_KEY bulunamadı!")
+
+def _api_anahtari_oku() -> str | None:
+    anahtar = os.getenv("GROQ_API_KEY")
+    if anahtar:
+        return anahtar.strip()
+    try:  # Streamlit Cloud: .streamlit/secrets.toml
+        return st.secrets["GROQ_API_KEY"]
+    except Exception:
+        return None
+
+
+GROQ_API_KEY = _api_anahtari_oku()
+if not GROQ_API_KEY:
+    st.error("HATA: .env dosyasında GROQ_API_KEY bulunamadı!")
     st.stop()
 
-genai.configure(api_key=GEMINI_API_KEY)
+client = Groq(api_key=GROQ_API_KEY)
 
-@st.cache_data(show_spinner=False)
+# Varsayılan sırada öne çıkacak modeller (listede varsa)
+TERCIH_EDILEN = [
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-120b",
+    "qwen/qwen3-32b",
+    "openai/gpt-oss-20b",
+    "llama-3.1-8b-instant",
+]
+DISLANAN = ("whisper", "guard", "tts", "orpheus", "playai", "safeguard", "embed")
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
 def aktif_modelleri_getir():
-    modeller = []
     try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                modeller.append(m.name.replace("models/", ""))
+        idler = [m.id for m in client.models.list().data]
+        idler = [i for i in idler if not any(x in i.lower() for x in DISLANAN)]
+        onde = [m for m in TERCIH_EDILEN if m in idler]
+        geri = sorted(i for i in idler if i not in onde)
+        return onde + geri or TERCIH_EDILEN
     except Exception as e:
-        st.sidebar.error(f"Modeller çekilemedi: {e}")
-    return modeller
+        st.sidebar.warning(f"Model listesi çekilemedi, varsayılan liste kullanılıyor: {e}")
+        return TERCIH_EDILEN
+
 
 guncel_modeller = aktif_modelleri_getir()
-if not guncel_modeller:
-    st.error("Google'dan aktif model listesi alınamadı (API anahtarı geçersiz olabilir ya da ağ engelleniyor).")
-    st.stop()
+model_adi = st.sidebar.selectbox("Groq Modeli", guncel_modeller, index=0)
 
-model_adi = st.sidebar.selectbox("Google Gemini Modeli", guncel_modeller, index=0)
+# ---- Gemini (büyük bağlam / yedek için; GEMINI_API_KEY varsa devreye girer)
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_VAR = bool(genai and GEMINI_API_KEY)
+if GEMINI_VAR:
+    genai.configure(api_key=GEMINI_API_KEY)
+
+GEMINI_TERCIH = ["gemini-2.5-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-flash-latest"]
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def gemini_modelleri_getir():
+    try:
+        idler = [m.name.replace("models/", "") for m in genai.list_models()
+                 if "generateContent" in m.supported_generation_methods]
+        onde = [m for m in GEMINI_TERCIH if m in idler]
+        return onde + sorted(i for i in idler if i not in onde) or GEMINI_TERCIH
+    except Exception:
+        return GEMINI_TERCIH
+
+
+gemini_model_adi = None
+if GEMINI_VAR:
+    saglayici = st.sidebar.radio(
+        "AI sağlayıcı",
+        ["Otomatik (büyük bağlamda Gemini, olmazsa Groq)", "Sadece Groq", "Sadece Gemini"],
+    )
+    gemini_model_adi = st.sidebar.selectbox("Gemini Modeli", gemini_modelleri_getir(), index=0)
+else:
+    saglayici = "Sadece Groq"
+    st.sidebar.caption("Gemini yedeği kapalı (GEMINI_API_KEY veya google-generativeai yok).")
+
+st.sidebar.markdown("**Bağlam boyutu** (ücretsiz plandaki dakikalık token sınırı için)")
+TABLO7_MAX_SATIR = st.sidebar.number_input("TABLO 7 en fazla satır", 0, 2000, 100, step=50)
+TABLO8_MAX_SATIR = st.sidebar.number_input("TABLO 8 en fazla satır", 0, 2000, 120, step=20)
+
+
+def _csv_kirp(d: pd.DataFrame, n: int) -> str:
+    """Tabloyu CSV'ye çevirir; çok uzunsa SON n satırı verir ve modele bunu söyler."""
+    n = int(n)
+    if n <= 0:
+        return "(bu tablo kenar çubuğu ayarıyla kapatıldı)\n"
+    if len(d) <= n:
+        return d.to_csv(index=False)
+    return (
+        f"(NOT: toplam {len(d)} satırdan yalnızca SON {n} satır gösteriliyor; "
+        "daha eski kayıtlar bu bağlamda YOK, bunu cevapta belirt.)\n"
+        + d.tail(n).to_csv(index=False)
+    )
+
 
 # =============================================================================
 # BAĞLAM (CONTEXT) OLUŞTURMA
@@ -125,7 +201,7 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
 
     if "TARİH" in df.columns:
         gunluk_ozet = df.groupby([df["TARİH"].dt.date, "TEZGAH", "Durum"])["Sure_Saat"].sum().reset_index()
-        parcalar.append("### TABLO 7: GÜNLÜK TEZGAH-DURUM SÜRE ÖZETİ\n" + gunluk_ozet.to_csv(index=False))
+        parcalar.append("### TABLO 7: GÜNLÜK TEZGAH-DURUM SÜRE ÖZETİ\n" + _csv_kirp(gunluk_ozet, TABLO7_MAX_SATIR))
 
     onerilen_ct = compute_onerilen_ct(df)
     if not onerilen_ct.empty:
@@ -146,7 +222,7 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
         kronolojik_veri = df[mevcut_kolonlar].copy()
         if "Sure_Saat" in kronolojik_veri.columns:
             kronolojik_veri["Sure_Dakika"] = (kronolojik_veri["Sure_Saat"] * 60).round(0)
-        parcalar.append("### TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI (Satır Bazlı Döküm)\n" + kronolojik_veri.to_csv(index=False))
+        parcalar.append("### TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI (Satır Bazlı Döküm)\n" + _csv_kirp(kronolojik_veri, TABLO8_MAX_SATIR))
 
     return "\n\n".join(parcalar), sorted(set(kullanilan_metrikler))
 
@@ -176,6 +252,14 @@ KURALLAR:
 --- VERİ TABLOLARI (CSV) ---
 {baglam}
 """
+
+_tahmini_token = len(SISTEM_PROMPTU) // 3  # Türkçe CSV için kaba tahmin
+st.sidebar.caption(f"Tahmini bağlam: ~{_tahmini_token:,} token")
+if _tahmini_token > 8000:
+    st.sidebar.warning(
+        "Bağlam büyük. Ücretsiz planda 'çok büyük istek / dakikalık token' hatası "
+        "alabilirsin. Satır sayılarını düşür veya yukarıdaki tarih filtresini daralt."
+    )
 
 if "sohbet_gecmisi" not in st.session_state:
     st.session_state.sohbet_gecmisi = []
@@ -278,6 +362,45 @@ soru = st.chat_input("Sorunu manuel yaz veya yukarıdan bir analiz seç...")
 if secilen_soru:
     soru = secilen_soru
 
+def _groq_cagri() -> str:
+    mesajlar = [{"role": "system", "content": SISTEM_PROMPTU}]
+    mesajlar += st.session_state.sohbet_gecmisi[-7:]  # son birkaç mesaj yeter
+    yanit = client.chat.completions.create(
+        model=model_adi, messages=mesajlar, temperature=0.2, max_tokens=1500,
+    )
+    return yanit.choices[0].message.content or ""
+
+
+def _gemini_cagri(soru_metni: str) -> str:
+    model = genai.GenerativeModel(model_name=gemini_model_adi, system_instruction=SISTEM_PROMPTU)
+    gecmis = [
+        {"role": "user" if m["role"] == "user" else "model", "parts": [m["content"]]}
+        for m in st.session_state.sohbet_gecmisi[-7:-1]
+    ]
+    while gecmis and gecmis[0]["role"] != "user":  # Gemini geçmişi 'user' ile başlamalı
+        gecmis.pop(0)
+    return model.start_chat(history=gecmis).send_message(soru_metni).text
+
+
+def _cevap_uret(soru_metni: str) -> tuple[str, str]:
+    if saglayici == "Sadece Gemini":
+        sira = ["gemini"]
+    elif saglayici == "Sadece Groq":
+        sira = ["groq"]
+    else:  # Otomatik
+        sira = ["gemini", "groq"] if _tahmini_token > 8000 else ["groq", "gemini"]
+
+    son_hata = None
+    for s_ in sira:
+        try:
+            if s_ == "groq":
+                return _groq_cagri(), f"Groq · {model_adi}"
+            return _gemini_cagri(soru_metni), f"Gemini · {gemini_model_adi}"
+        except Exception as e:
+            son_hata = e
+    raise son_hata
+
+
 if soru:
     st.session_state.sohbet_gecmisi.append({"role": "user", "content": soru})
     with st.chat_message("user"):
@@ -286,23 +409,23 @@ if soru:
     try:
         with st.chat_message("assistant"):
             with st.spinner("Veriler ve formüller analiz ediliyor..."):
-                model = genai.GenerativeModel(
-                    model_name=model_adi,
-                    system_instruction=SISTEM_PROMPTU
-                )
-                
-                gemini_gecmis = []
-                for mesaj in st.session_state.sohbet_gecmisi[:-1]: 
-                    role = "user" if mesaj["role"] == "user" else "model"
-                    gemini_gecmis.append({"role": role, "parts": [mesaj["content"]]})
-                
-                chat = model.start_chat(history=gemini_gecmis)
-                response = chat.send_message(soru)
-                cevap = response.text
-                
+                cevap, kullanilan = _cevap_uret(soru)
+                # Bazı modeller (ör. qwen3) <think>...</think> bloğu döndürebilir
+                cevap = re.sub(r"<think>.*?</think>", "", cevap, flags=re.DOTALL).strip()
                 st.markdown(cevap)
+                st.caption(f"🤖 {kullanilan}")
         st.session_state.sohbet_gecmisi.append({"role": "assistant", "content": cevap})
     except Exception as e:
-        st.error(f"AI çağrısı başarısız oldu: {e}")
+        st.session_state.sohbet_gecmisi.pop()  # cevapsız kalan soruyu geçmişten çıkar
+        hata = str(e)
+        if "413" in hata or "too large" in hata.lower() or "tokens per minute" in hata.lower():
+            st.error(
+                "İstek seçili modelin ücretsiz limiti için çok büyük. Sağlayıcıyı Gemini yap, "
+                "TABLO 7/8 satırlarını azalt veya tarih filtresini daralt."
+            )
+        elif "429" in hata or "rate" in hata.lower() or "quota" in hata.lower():
+            st.error("Limit doldu. Biraz bekle ya da başka bir model/sağlayıcı seç.")
+        else:
+            st.error(f"AI çağrısı başarısız oldu: {e}")
     else:
         st.rerun()
