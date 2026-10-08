@@ -30,6 +30,7 @@ def _kol(df, *adaylar):
     return None
 
 
+
 def ad_norm(x) -> str:
     if x is None or (isinstance(x, float) and np.isnan(x)):
         return x
@@ -77,8 +78,34 @@ def _p_etiket(p) -> str:
 
 
 _TR_KATLA = str.maketrans("İıŞşĞğÜüÖöÇç", "IiSsGgUuOoCc")
+_BITTI_ADAYLARI = ["finish", "durum2", "islem durumu"]
 
+def _bitti_maske(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.translate(_TR_KATLA).str.upper().str.contains("BITTI", regex=False, na=False)
 
+def _bitti_kolonu(df: pd.DataFrame):
+    adaylar = [c for c in df.columns if str(c).strip() == "parça"]
+    adaylar += [c for c in df.columns if c not in adaylar and str(c).strip().translate(_TR_KATLA).lower() in _BITTI_ADAYLARI]
+    for c in adaylar:
+        if _bitti_maske(df[c]).any():
+            return c
+    en, say = None, 0
+    for c in df.columns:
+        if c in adaylar or not (pd.api.types.is_object_dtype(df[c]) or pd.api.types.is_string_dtype(df[c])):
+            continue
+        u = pd.Series(df[c].dropna().astype(str).unique())
+        if u.empty or len(u) > 50 or not (u.str.translate(_TR_KATLA).str.upper().str.strip() == "BITTI").any():
+            continue
+        n = int(_bitti_maske(df[c]).sum())
+        if n > say:
+            en, say = c, n
+    return en or (adaylar[0] if adaylar else None)
+
+def _alarm(yavas: pd.Series, bitti: pd.Series, c_bitti):
+    norm = np.where(yavas, "🔴 Yavaş", "🟢 Normal")
+    if c_bitti is None:                    # kontrol sütunu yok → eski davranış
+        return norm
+    return np.where(bitti.astype(bool), norm, "⏳ Yarım Kaldı")
 def uzun_uyumsuz(df: pd.DataFrame, parca="Parça", uzun="Uzun_Ref") -> pd.DataFrame:
     if parca not in df.columns or uzun not in df.columns:
         return df.iloc[0:0]
@@ -154,6 +181,10 @@ def sn_izleme(df: pd.DataFrame, parca_kisa: str = "M01G03", operasyon: str = "60
         return bos, bos, setup, kapsam
 
     u["Operator"] = u[c_kisi].map(op_adi).map(ad_norm)
+    c_bitti = _bitti_kolonu(df)
+    u["_bitti"] = _bitti_maske(u[c_bitti]) if c_bitti else False
+    u = u.sort_values(["S/N", "TARİH"] + (["BAŞLANGIÇ_SAAT"] if "BAŞLANGIÇ_SAAT" in u.columns else []), kind="stable")
+
     kol = [c for c in ["S/N", "TARİH", "VARDİYA", "BAŞLANGIÇ_SAAT", "BİTİŞ_SAAT", "TEZGAH", "Operator", "Sure_Saat"] if c in u.columns]
     sirala = ["S/N", "TARİH"] + (["BAŞLANGIÇ_SAAT"] if "BAŞLANGIÇ_SAAT" in u.columns else [])
     detay = u[kol].sort_values(sirala).reset_index(drop=True)
@@ -162,6 +193,7 @@ def sn_izleme(df: pd.DataFrame, parca_kisa: str = "M01G03", operasyon: str = "60
         Toplam_Saat=("Sure_Saat", "sum"), Kayit=("Sure_Saat", "size"),
         Ilk_Tarih=("TARİH", "min"), Son_Tarih=("TARİH", "max"),
         Operatorler=("Operator", lambda s: " + ".join(dict.fromkeys(s))),
+        Bitti=("_bitti", "max"),
     )
     if "VARDİYA" in u.columns:
         agg["Vardiyalar"] = ("VARDİYA", lambda s: " + ".join(dict.fromkeys(s.dropna().astype(str))))
@@ -169,19 +201,24 @@ def sn_izleme(df: pd.DataFrame, parca_kisa: str = "M01G03", operasyon: str = "60
         agg["Tezgah"] = ("TEZGAH", lambda s: " / ".join(dict.fromkeys(s)))
     if c_ct:
         agg["Katalog_CT"] = (c_ct, "max")
+    
     ozet = u.groupby("S/N").agg(**agg).reset_index()
+    _k = u.groupby(["S/N", "Operator"], sort=False)["Sure_Saat"].sum().reset_index()
+    _k["x"] = _k["Operator"].fillna("?") + " (" + _k["Sure_Saat"].map("{:.2f}".format) + " sa)"
+    ozet["Kim_Ne_Kadar"] = ozet["S/N"].map(_k.groupby("S/N", sort=False)["x"].agg(" → ".join))
     ozet["Adet"] = 1
     ozet["Bolunmus_Is"] = ozet["Kayit"] > 1
     med = ozet["Toplam_Saat"].median()
     ozet["Medyana_Gore_%"] = (ozet["Toplam_Saat"] - med) / med * 100 if med > 0 else np.nan
     if "Katalog_CT" in ozet:
         ref = ozet["Katalog_CT"].where(ozet["Katalog_CT"] > 0)
-        ozet["Alarm"] = np.where(ref.notna() & (ozet["Toplam_Saat"] > ref * (1 + ALARM_TOLERANS)), "🔴 Yavaş", "🟢 Normal")
+        yavas = ref.notna() & (ozet["Toplam_Saat"] > ref * (1 + ALARM_TOLERANS))
+        ozet["Alarm"] = _alarm(yavas, ozet["Bitti"], c_bitti)
     ozet["Hafta"] = hafta_no(ozet["Son_Tarih"])
     ozet = ozet.sort_values("Son_Tarih").reset_index(drop=True)
-    kapsam.update(sn_sayisi=int(len(ozet)), medyan_saat=float(med), bolunmus_sn=int(ozet["Bolunmus_Is"].sum()))
+    kapsam.update(sn_sayisi=int(len(ozet)), medyan_saat=float(med), bolunmus_sn=int(ozet["Bolunmus_Is"].sum()),
+                  yarim_sn=int((~ozet["Bitti"].astype(bool)).sum()) if c_bitti else 0, bitti_kolonu=str(c_bitti) if c_bitti else "")
     return ozet.round({"Toplam_Saat": 2, "Medyana_Gore_%": 1}), detay.round({"Sure_Saat": 2}), setup, kapsam
-
 
 def sn_hafta_ozeti(ozet: pd.DataFrame, setup: pd.DataFrame) -> pd.DataFrame:
     if ozet.empty:
@@ -414,7 +451,8 @@ def sn_tum_analiz(df: pd.DataFrame, parca_kisa: str, operasyon: str, op_adi=lamb
     t["operator"] = _pay_analizi(detay, ozet, "Operator", med)
     t["vardiya"] = _pay_analizi(detay, ozet, "VARDİYA", med)
     t["tezgah"] = _pay_analizi(detay, ozet, "TEZGAH", med)
-    sirali = ozet.sort_values(["Toplam_Saat", "Son_Tarih"], ascending=[False, True])
+    _o = ozet[ozet["Bitti"].astype(bool)] if "Bitti" in ozet and ozet["Bitti"].any() else ozet
+    sirali = _o.sort_values(["Toplam_Saat", "Son_Tarih"], ascending=[False, True])
     cols = [c for c in ["S/N", "Toplam_Saat", "Kayit", "Operatorler", "Vardiyalar", "Tezgah", "Son_Tarih"] if c in ozet.columns]
     t["uclar"] = pd.concat([sirali.head(5)[cols].assign(Grup="EN YAVAŞ 5"),
                             sirali.tail(5).iloc[::-1][cols].assign(Grup="EN HIZLI 5")]).reset_index(drop=True)
@@ -471,6 +509,10 @@ def sn_tumu(df: pd.DataFrame, op_adi=lambda k: k):
     uz = u[cu].astype(str).str.strip().where(u[cu].notna(), None) if cu else pd.Series([None] * len(u), index=u.index)
     u["Uzun_Ref"] = uz.fillna(u["Parça"].map(UZUN_HARITA)).fillna(u["Parça"].map(lambda p: uzun_kod(p) if p in UZUN_KOD_ONEKI else "")).fillna("")
     u["Operator"] = u[c_kisi].map(op_adi).map(ad_norm)
+    c_bitti = _bitti_kolonu(df)
+    u["_bitti"] = _bitti_maske(u[c_bitti]) if c_bitti else False
+    u = u.sort_values(_SN_ANAHTAR + ["TARİH"] + (["BAŞLANGIÇ_SAAT"] if "BAŞLANGIÇ_SAAT" in u.columns else []), kind="stable")
+    
     kol = [c for c in ["TARİH", "VARDİYA", "BAŞLANGIÇ_SAAT", "BİTİŞ_SAAT", "TEZGAH", "Operator", "Sure_Saat"] if c in u.columns]
     sirala = _SN_ANAHTAR + ["TARİH"] + (["BAŞLANGIÇ_SAAT"] if "BAŞLANGIÇ_SAAT" in u.columns else [])
     detay = u[["Parça", "Uzun_Ref", "Operasyon", "S/N"] + kol].sort_values(sirala).reset_index(drop=True)
@@ -483,6 +525,7 @@ def sn_tumu(df: pd.DataFrame, op_adi=lambda k: k):
         Ilk_Tarih=("TARİH", "min"), Son_Tarih=("TARİH", "max"),
         Operatorler=("Operator", lambda s: _birles(s, " + ")),
         Uzun_Ref=("Uzun_Ref", _ilk_dolu),
+        Bitti=("_bitti", "max"),
     )
     if "VARDİYA" in u.columns:
         agg["Vardiyalar"] = ("VARDİYA", lambda s: _birles(s, " + "))
@@ -490,21 +533,27 @@ def sn_tumu(df: pd.DataFrame, op_adi=lambda k: k):
         agg["Tezgah"] = ("TEZGAH", lambda s: _birles(s, " / "))
     if c_ct:
         agg["Katalog_CT"] = (c_ct, "max")
+        
     ozet = u.groupby(_SN_ANAHTAR).agg(**agg).reset_index()
+    
+    _k = u.groupby(_SN_ANAHTAR + ["Operator"], sort=False)["Sure_Saat"].sum().reset_index()
+    _k["x"] = _k["Operator"].fillna("?") + " (" + _k["Sure_Saat"].map("{:.2f}".format) + " sa)"
+    ozet = ozet.merge(_k.groupby(_SN_ANAHTAR, sort=False)["x"].agg(" → ".join).rename("Kim_Ne_Kadar").reset_index(), on=_SN_ANAHTAR, how="left")
+    
     sira_ = [c for c in ozet.columns if c != "Uzun_Ref"]
     sira_.insert(sira_.index("Parça") + 1, "Uzun_Ref")
     ozet = ozet[sira_]
     ozet["Adet"] = 1
     ozet["Bolunmus_Is"] = ozet["Kayit"] > 1
-    med = ozet.groupby(["Parça", "Operasyon"])["Toplam_Saat"].transform("median")   
+    med = ozet.groupby(["Parça", "Operasyon"])["Toplam_Saat"].transform("median")
     ozet["Medyana_Gore_%"] = np.where(med > 0, (ozet["Toplam_Saat"] - med) / med * 100, np.nan)
     if "Katalog_CT" in ozet:
         ref = ozet["Katalog_CT"].where(ozet["Katalog_CT"] > 0)
-        ozet["Alarm"] = np.where(ref.notna() & (ozet["Toplam_Saat"] > ref * (1 + ALARM_TOLERANS)), "🔴 Yavaş", "🟢 Normal")
+        yavas = ref.notna() & (ozet["Toplam_Saat"] > ref * (1 + ALARM_TOLERANS))
+        ozet["Alarm"] = _alarm(yavas, ozet["Bitti"], c_bitti)
     ozet["Hafta"] = hafta_no(ozet["Son_Tarih"])
     ozet = ozet.sort_values(["Son_Tarih", "Parça", "Operasyon", "S/N"]).reset_index(drop=True)
     return ozet.round({"Toplam_Saat": 2, "Medyana_Gore_%": 1}), detay.round({"Sure_Saat": 2})
-
 
 def sn_tumu_parca_ozeti(ozet: pd.DataFrame) -> pd.DataFrame:
     if ozet is None or ozet.empty:
@@ -523,7 +572,7 @@ def sn_tumu_parca_ozeti(ozet: pd.DataFrame) -> pd.DataFrame:
         .round({"Toplam_Uretim_Sa": 1, "Ort_Sure_Sa": 2, "Medyan_Sure_Sa": 2}).reset_index(drop=True)
 
 
-def _tum_sn_gorunumu(st, df, op_adi, tablo):
+def _tum_sn_gorunumu(st, df, op_adi, tablo, kpi_alan):
     ozet, detay = sn_tumu(df, op_adi)
     if ozet.empty:
         st.info("Seçili filtrelerde S/N'li üretim kaydı yok.")
@@ -535,18 +584,18 @@ def _tum_sn_gorunumu(st, df, op_adi, tablo):
     pair_etiket = {(p, o): f"{_p_etiket(p)} — op {o} ({int(n)} adet)" for p, o, n in zip(pairs["Parça"], pairs["Operasyon"], pairs["SN_Adedi"])}
     gunler = sorted((pd.Timestamp(g) for g in detay["TARİH"].dt.normalize().dropna().unique()), reverse=True)
 
-    f1, f2 = st.columns([2, 3])
-    gun = f1.selectbox("Gün", [None] + gunler, format_func=_gun_etiketi, key="sn_tum_gun")
-    olcu = f2.radio("Gün ölçüsü", ["Tamamlandığı gün", "O gün kaydı olan"], horizontal=True, key="sn_tum_olcu", disabled=gun is None,
-                    help="Tamamlandığı gün: S/N'nin son kaydı o gün girilenler (adet bu güne yazılır). "
-                         "O gün kaydı olan: o gün üzerinde çalışılan tüm S/N'ler (başka güne devredenler dahil).")
-    secili = st.multiselect("Parça / operasyon (boş bırakırsanız hepsi)", list(pair_etiket), format_func=lambda a: pair_etiket[a], key="sn_tum_pairs")
-    g1, g2, g3 = st.columns([2, 2, 3])
-    opsec = g1.selectbox("Operatör", ["Tümü"] + sorted(detay["Operator"].dropna().unique().tolist()), key="sn_tum_op")
-    ara = g2.text_input("S/N ara", key="sn_tum_ara", placeholder="örn. 2G7J")
-    kod_ara = g3.text_input("🔎 Ara: parça · uzun referans · operasyon", key="sn_tum_kod",
-                            placeholder="örn. 2547M01G03   ·   M01G03 60   ·   2547M01G03 op 60",
-                            help="Kısa kod (M01G03), uzun referans (2547M01G03 ya da sadece 2547) ve operasyon (60) birlikte yazılabilir; 'op' kelimesi yazmak zorunda değilsiniz.")
+    with st.expander("🔍 Detaylı Süzgeçler"):
+        f1, f2, f3 = st.columns([2, 3, 2])
+        gun = f1.selectbox("Gün", [None] + gunler, format_func=_gun_etiketi, key="sn_tum_gun")
+        olcu = f2.radio("Gün ölçüsü", ["Tamamlandığı gün", "O gün kaydı olan"], horizontal=True, key="sn_tum_olcu", disabled=gun is None,
+                        help="Tamamlandığı gün: S/N'nin son kaydı o gün olanlar. O gün kaydı olan: o gün çalışılan tüm S/N'ler (devredenler dahil).")
+        opsec = f3.selectbox("Operatör", ["Tümü"] + sorted(detay["Operator"].dropna().unique().tolist()), key="sn_tum_op")
+        secili = st.multiselect("Parça / operasyon (boşsa hepsi)", list(pair_etiket), format_func=lambda a: pair_etiket[a], key="sn_tum_pairs")
+        g2, g3 = st.columns([1, 2])
+        ara = g2.text_input("S/N ara", key="sn_tum_ara", placeholder="örn. 2G7J")
+        kod_ara = g3.text_input("🔎 Ara: parça · uzun referans · operasyon", key="sn_tum_kod",
+                                placeholder="örn. 2547M01G03 · M01G03 60",
+                                help="Kısa kod, uzun referans ve operasyon birlikte yazılabilir; 'op' yazmak zorunda değilsiniz.")
 
     x = ozet
     if gun is not None:
@@ -573,11 +622,12 @@ def _tum_sn_gorunumu(st, df, op_adi, tablo):
         if len(_uy):
             st.warning(f"⚠️ {len(_uy)} S/N'de kısa kod ile uzun referans uyuşmuyor (örn. {_uy.iloc[0]['Parça']} ↔ {_uy.iloc[0]['Uzun_Ref']}); "
                        "Uzun Referans sütununa bakın, giriş hatası olabilir.")
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("📦 Adet (S/N)", len(x), help="Parça + operasyon + seri numarası sayısı. Aynı S/N farklı operasyonlarda ayrı adet sayılır.")
-        k2.metric("🔩 Parça/operasyon", len(x[["Parça", "Operasyon"]].drop_duplicates()))
-        k3.metric("⚖️ Bölünerek yapılan", int(x["Bolunmus_Is"].sum()))
-        k4.metric("⏱️ Toplam süre", f"{x['Toplam_Saat'].sum():.1f} sa")
+        with kpi_alan:
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("📦 Adet (S/N)", len(x), help="Parça + operasyon + seri numarası sayısı.")
+            k2.metric("🔩 Parça/operasyon", len(x[["Parça", "Operasyon"]].drop_duplicates()))
+            k3.metric("⚖️ Bölünerek yapılan", int(x["Bolunmus_Is"].sum()))
+            k4.metric("⏱️ Toplam süre", f"{x['Toplam_Saat'].sum():.1f} sa")
         st.caption(f"{_gun_etiketi(gun)}" + ("" if gun is None else f" ({olcu.lower()})") + f" · {len(x)} / {len(ozet)} adet gösteriliyor.")
         st.markdown("**Parça / operasyon bazında adet**")
         tablo(sn_tumu_parca_ozeti(x))
@@ -601,7 +651,7 @@ def _tum_sn_gorunumu(st, df, op_adi, tablo):
 
 _AI_TABLOLAR = [
     ("ozet", 10, "S/N BAZLI ADET — her satır 1 ADET. Toplam_Saat = S/N'nin tüm kayıtları; Bolunmus_Is=True: birden fazla kayıt; "
-                 "Alarm: Katalog_CT'yi %{tol} aşarsa Yavaş; Hafta Perşembe→Çarşamba, S/N tamamlandığı (Son_Tarih) haftaya yazılır"),
+                 "Alarm: yalnız Bitti=True olanlar için Katalog_CT'yi %{tol} aşarsa Yavaş, aksi Normal; Bitti=False '⏳ Yarım Kaldı' (süre eksik, kıyaslama yapma); Hafta Perşembe→Çarşamba, S/N tamamlandığı (Son_Tarih) haftaya yazılır"),
     ("detay", 11, "S/N KAYIT DETAYI — her S/N için kim, hangi vardiya, saat aralığı, süre"),
     ("hafta", 12, "HAFTALIK ADET ÖZETİ (Perşembe→Çarşamba; Gunluk_Ort_Adet = Adet / üretim yapılan gün)"),
     ("setup", 13, "SET-UP KAYITLARI (parça+operasyona bağlı, S/N'siz olabilir)"),
@@ -682,7 +732,7 @@ _COL = {
     "Gun_Sayisi": "Çalıştığı Gün", "Operasyonlar": "Operasyon No / Metin", "Grup": "Grup",
     "Operasyon": "Operasyon No", "SN_Adedi": "Adet (S/N sayısı)", "SN_Listesi": "Seri Numaraları (S/N)",
 }
-_DEGER = {"🔴 Yavaş": "🔴 Katalog süresini aştı", "🟢 Normal": "🟢 Katalog süresi içinde", True: "Evet", False: "Hayır"}
+_DEGER = {"🔴 Yavaş": "🔴 Katalog süresini aştı", "🟢 Normal": "🟢 Katalog süresi içinde","⏳ Yarım Kaldı": "⏳ Yarım kaldı (üretim sürüyor)", True: "Evet", False: "Hayır"}
 
 
 def gorsel(tablo: pd.DataFrame, ek: dict | None = None) -> pd.DataFrame:
@@ -706,7 +756,7 @@ def gorsel(tablo: pd.DataFrame, ek: dict | None = None) -> pd.DataFrame:
     return t.rename(columns=ren)
 
 
-_COL.update({"Uzun_Ref": "Uzun Referans (Parça No)", "Kod_Ope": "Kod & Operasyon", "Op_No": "Operasyon No", "Parça": "Parça (kısa kod)"})
+_COL.update({"Uzun_Ref": "Uzun Referans (Parça No)", "Kod_Ope": "Kod & Operasyon", "Op_No": "Operasyon No", "Kim_Ne_Kadar": "Kim Ne Kadar Çalıştı (sırayla)","Parça": "Parça (kısa kod)","Bitti": "Bitti mi?"})
 
 _OP_EK = {"Kayit": "İşlem Kaydı", "Toplam_Saat": "Toplam Çalışma (sa)", "Ilk_Tarih": "İlk Çalıştığı Gün", "Son_Tarih": "Son Çalıştığı Gün"}
 
@@ -747,10 +797,50 @@ def ozet_cumleleri(t: dict, veri_aralik=None) -> list[str]:
                      "Fark küçük örneklem ve iş karmaşasından da etkilenebilir.")
     return c
 
+def _sn_anahtar(df: pd.DataFrame) -> list:
+    c_p, c_o = _kol(df, "PARÇA NO_ÜRETİM_GİRİLEN", "PARÇA NO ÜRETİM GİRİLEN"), _kol(df, "OPERASYON_NO", "OPERASYON NO")
+    return [c for c in (c_p, c_o) if c] + ["S/N"]
 
-def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
+
+def _sn_idx(df: pd.DataFrame, anahtar: list) -> pd.MultiIndex:
+    return pd.MultiIndex.from_frame(df[anahtar].astype(str).apply(lambda x: x.str.strip()))
+
+
+def sn_genislet(df: pd.DataFrame, secilen_baslangic, secilen_bitis) -> pd.DataFrame:
+    gun = df["TARİH"].dt.normalize()
+    secili = ((gun >= pd.Timestamp(secilen_baslangic)) & (gun <= pd.Timestamp(secilen_bitis))).to_numpy()
+    mi, sn_var = _sn_idx(df, _sn_anahtar(df)), df["S/N"].notna().to_numpy()
+    dokunulan = mi[secili & sn_var]
+    return df[secili | (mi.isin(dokunulan) & sn_var)]
+
+
+def tam_tarihce(df: pd.DataFrame, df_ham) -> pd.DataFrame:
+    if df_ham is None or "S/N" not in df.columns or "S/N" not in df_ham.columns:
+        return df
+    anahtar = [c for c in _sn_anahtar(df) if c in df_ham.columns]
+    dok = _sn_idx(df[df["S/N"].notna()], anahtar)
+    tam = _sn_idx(df_ham, anahtar).isin(dok) & df_ham["S/N"].notna().to_numpy()
+    r = pd.concat([df[df["S/N"].isna()], df_ham[tam]])
+    return r.sort_values("TARİH", kind="stable").reset_index(drop=True)
+def _tarih_filtresi(st, df: pd.DataFrame) -> pd.DataFrame:
+    if "TARİH" not in df.columns or "S/N" not in df.columns or df["TARİH"].notna().sum() == 0:
+        return df
+    mn, mx = df["TARİH"].min().date(), df["TARİH"].max().date()
+    aralik = st.date_input("📅 Tarih aralığı", value=(mn, mx), min_value=mn, max_value=mx, key="sn_tarih_aralik",
+                           help="Aralıkta dokunulan S/N'lerin aralık dışındaki (sarkan) kayıtları da dahil edilir.")
+    if not (isinstance(aralik, (tuple, list)) and len(aralik) == 2) or (aralik[0] == mn and aralik[1] == mx):
+        return df
+    sonuc = sn_genislet(df, *aralik)
+    gun = df["TARİH"].dt.normalize()
+    ic = int(((gun >= pd.Timestamp(aralik[0])) & (gun <= pd.Timestamp(aralik[1]))).sum())
+    st.caption(f"{ic} kayıt aralıkta + {len(sonuc) - ic} sarkan kayıt (aynı S/N'lerin aralık dışı kayıtları).")
+    return sonuc
+
+    
+def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k, df_ham=None):
     import streamlit as st
 
+    df = tam_tarihce(df, df_ham)
     uzun_haritasi_guncelle(df)   
 
     if "S/N" not in df.columns:
@@ -758,13 +848,20 @@ def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
         return
     secenekler = parca_op_secenekleri(df, pilot)
     etiketler = dict(secenekler)
-    secim = st.selectbox("Parça / operasyon", [s[0] for s in secenekler], format_func=lambda a: etiketler[a], key="sn_parca")
+    kpi_alan = st.container()          
+
+    with st.expander("🔍 Detaylı Süzgeçler", expanded=False):
+        s1, s2 = st.columns([3, 2])
+        with s1:
+            secim = st.selectbox("Parça / operasyon", [s[0] for s in secenekler], format_func=lambda a: etiketler[a], key="sn_parca")
+        with s2:
+            df = _tarih_filtresi(st, df)
 
     def tablo(df_, ek=None, **kw):
         st.dataframe(gorsel(df_, ek), use_container_width=True, hide_index=True, **kw)
 
-    if secim == TUMU:   
-        _tum_sn_gorunumu(st, df, op_adi, tablo)
+    if secim == TUMU:
+        _tum_sn_gorunumu(st, df, op_adi, tablo, kpi_alan)
         return
     kisa, op = secim
     t = sn_tum_analiz(df, kisa, op, op_adi)
@@ -777,16 +874,18 @@ def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
         st.download_button(f"⬇️ {ad} (CSV)", tab.to_csv(index=False).encode("utf-8-sig"),
                            file_name=f"{uzun_kod(kisa)}_op{op}_{anahtar}.csv", mime="text/csv", key=f"dl_{anahtar}")
 
-    st.markdown("### 📈 Genel Üretim Özeti")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("📦 Tamamlanan Adet", f"{k['sn_sayisi']}", help="Adet = farklı seri numarası (S/N) sayısı. Aynı parçanın birden fazla kaydı 1 adet sayılır.")
-    c2.metric("⏱️ Medyan Süre / Adet", f"{k['medyan_saat']:.2f} sa", help="Parçaların yarısı bundan kısa, yarısı bundan uzun sürede işlendi.")
-    c3.metric("🔴 Katalog Süresini Aşan", int((ozet["Alarm"] == "🔴 Yavaş").sum()) if "Alarm" in ozet else 0,
-              help=f"Toplam süresi katalog süresinin %{int(ALARM_TOLERANS * 100)}'den fazla üstünde olan adetler.")
-    c4.metric("⚖️ Bölünerek Yapılan", k["bolunmus_sn"], help="Tek kayıtta değil, vardiya/operatör değişimiyle birden fazla kayıtta tamamlanan adetler.")
-    c5.metric("🛠️ Set-up", f"{k['setup_saat']:.1f} sa", help="Bu parça ve operasyona yazılmış set-up süreleri toplamı.")
-    for cumle in ozet_cumleleri(t, (df["TARİH"].min(), df["TARİH"].max()) if "TARİH" in df.columns else None):
-        st.markdown(f"- {cumle}")
+    with kpi_alan:
+        st.markdown("### 📈 Genel Üretim Özeti")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("📦 Tamamlanan Adet", f"{k['sn_sayisi']}", help="Adet = farklı seri numarası (S/N) sayısı.")
+        c2.metric("⏱️ Medyan Süre / Adet", f"{k['medyan_saat']:.2f} sa", help="Parçaların yarısı bundan kısa, yarısı uzun sürede işlendi.")
+        c3.metric("🔴 Katalog Süresini Aşan", int((ozet["Alarm"] == "🔴 Yavaş").sum()) if "Alarm" in ozet else 0,
+                  help=f"Süresi katalog süresinin %{int(ALARM_TOLERANS * 100)}'den fazla üstünde olan adetler.")
+        c4.metric("⚖️ Bölünerek Yapılan", k["bolunmus_sn"], help="Birden fazla kayıtta (vardiya/operatör değişimiyle) tamamlanan adetler.")
+        c5.metric("🛠️ Set-up", f"{k['setup_saat']:.1f} sa", help="Bu parça ve operasyona yazılmış set-up süreleri toplamı.")
+        with st.expander("📝 Özet yorumlar"):
+            for cumle in ozet_cumleleri(t, (df["TARİH"].min(), df["TARİH"].max()) if "TARİH" in df.columns else None):
+                st.markdown(f"- {cumle}")    
     with st.expander("📘 Okuma rehberi — rakamlar nasıl bulunuyor?"):
         st.markdown(
             "- **Adet:** Satır sayısı değil, farklı seri numarası (S/N) sayısıdır. Bir parça iki vardiyada, iki ustayla bitse bile 1 adettir.\n"
@@ -815,14 +914,14 @@ def render_sn_sekmesi(df: pd.DataFrame, pilot=PILOT, op_adi=lambda k: k):
         _hafta_detayi(st, df, t, op_adi, kisa, op, tablo)
 
     with sek[1]:
-        st.caption("Her satır 1 adet. Aşağıdaki süzgeçlerle istediğiniz parçalara bakın.")
-        f0, f1, f2, f3, f4 = st.columns([2, 2, 2, 1, 1])
         gunler_ = sorted((pd.Timestamp(g) for g in ozet["Son_Tarih"].dt.normalize().dropna().unique()), reverse=True)
-        gun_ = f0.selectbox("Tamamlandığı gün", [None] + gunler_, format_func=_gun_etiketi, key="sn_adet_gun")
-        ara = f1.text_input("S/N ara", key="sn_ara", placeholder="örn. 2G7J")
-        opsec = f2.selectbox("Operatör", ["Tümü"] + sorted(detay["Operator"].dropna().unique().tolist()), key="sn_adet_op")
-        sadece_bol = f3.checkbox("Sadece bölünenler", key="sn_bol")
-        sadece_yav = f4.checkbox("Sadece katalogu aşanlar", key="sn_yav")
+        with st.expander("🔍 Detaylı Süzgeçler"):
+            f0, f1, f2 = st.columns(3)
+            gun_ = f0.selectbox("Tamamlandığı gün", [None] + gunler_, format_func=_gun_etiketi, key="sn_adet_gun")
+            ara = f1.text_input("S/N ara", key="sn_ara", placeholder="örn. 2G7J")
+            opsec = f2.selectbox("Operatör", ["Tümü"] + sorted(detay["Operator"].dropna().unique().tolist()), key="sn_adet_op")
+            sadece_bol = f0.checkbox("Sadece bölünenler", key="sn_bol")
+            sadece_yav = f1.checkbox("Sadece katalogu aşanlar", key="sn_yav")
         x = ozet
         if gun_ is not None:
             x = x[x["Son_Tarih"].dt.normalize() == gun_]
@@ -920,25 +1019,26 @@ def _hafta_detayi(st, df, t, op_adi, kisa, op, tablo):
     for cumle in hafta_cumleleri(d, hafta, bas, bit, t.get("ozet") if kisa else None, uzun_kod(kisa) if kisa else "", op or ""):
         st.markdown(f"- {cumle}")
 
-    st.caption("Süzgeçler aşağıdaki grafik ve tüm tablolara uygulanır.")
     kx = f"sn_hf_{hafta}_{'f' if kapsam.startswith('Tüm') else 'p'}"
     durumlar = [x for x in DURUM_SIRASI if x in set(d["Durum"].dropna())] + sorted(set(d["Durum"].dropna()) - set(DURUM_SIRASI))
     tezgahlar = sorted(d["TEZGAH"].dropna().astype(str).unique()) if "TEZGAH" in d.columns else []
     operatorler = sorted(d["Operatör"].dropna().unique())
-    f1, f2, f3 = st.columns([2, 2, 3])
-    s_durum = f1.multiselect("Durum", durumlar, default=durumlar, key=kx + "_d")
-    s_tez = f2.multiselect("Tezgah", tezgahlar, default=tezgahlar, key=kx + "_t")
-    s_op = f3.multiselect("Operatör", operatorler, default=operatorler, key=kx + "_o")
     p_say = d.groupby("Parça").size().sort_values(ascending=False)
     uz_map = d.groupby("Parça")["Uzun_Ref"].agg(_ilk_dolu)
     p_etk = {p_: (f"{uz_map.get(p_)} ({p_}) · {n_} kayıt" if uz_map.get(p_) and uz_map.get(p_) != p_ else f"{p_} · {n_} kayıt") for p_, n_ in p_say.items()}
-    g1, g2, g3 = st.columns([3, 2, 3])
-    s_parca = g1.multiselect("Parça (uzun referans · kısa kod) — boşsa hepsi", list(p_etk), format_func=lambda p_: p_etk[p_], key=kx + "_p")
-    d_p = d[d["Parça"].isin(s_parca)] if s_parca else d
-    op_sec = sorted(d_p["Op_No"].dropna().astype(str).unique(), key=lambda z: (not z.isdigit(), int(z) if z.isdigit() else 0, z))
-    s_opn = g2.multiselect("Operasyon (60, 20 …; SETUP dahil) — boşsa hepsi", op_sec, key=kx + "_opn")
-    s_ara = g3.text_input("Ara: parça · uzun referans · operasyon", key=kx + "_a", placeholder="örn. 2547M01G03   veya   M01G03 60")
-    
+
+    with st.expander("🔍 Detaylı Süzgeçler (durum · tezgah · operatör · parça · operasyon · arama)"):
+        st.caption("Süzgeçler aşağıdaki grafik ve tüm tablolara uygulanır.")
+        f1, f2, f3 = st.columns(3)
+        s_durum = f1.multiselect("Durum", durumlar, default=durumlar, key=kx + "_d")
+        s_tez = f2.multiselect("Tezgah", tezgahlar, default=tezgahlar, key=kx + "_t")
+        s_op = f3.multiselect("Operatör", operatorler, default=operatorler, key=kx + "_o")
+        g1, g2, g3 = st.columns([3, 2, 3])
+        s_parca = g1.multiselect("Parça (uzun referans · kısa kod) — boşsa hepsi", list(p_etk), format_func=lambda p_: p_etk[p_], key=kx + "_p")
+        d_p = d[d["Parça"].isin(s_parca)] if s_parca else d
+        op_sec = sorted(d_p["Op_No"].dropna().astype(str).unique(), key=lambda z: (not z.isdigit(), int(z) if z.isdigit() else 0, z))
+        s_opn = g2.multiselect("Operasyon (60, 20 …; SETUP dahil) — boşsa hepsi", op_sec, key=kx + "_opn")
+        s_ara = g3.text_input("Ara: parça · uzun referans · operasyon", key=kx + "_a", placeholder="örn. 2547M01G03 veya M01G03 60")
     x = d[d["Durum"].isin(s_durum) & d["Operatör"].isin(s_op)]
     if tezgahlar:
         x = x[x["TEZGAH"].astype(str).isin(s_tez)]
@@ -983,7 +1083,6 @@ def _hafta_detayi(st, df, t, op_adi, kisa, op, tablo):
     with sub[1]:
         p = x.pivot_table(index="Operatör", columns="Durum", values="Sure_Saat", aggfunc="sum", fill_value=0)
         p["Toplam"] = p.sum(axis=1)
-        # BURASI DEĞİŞTİ: Parça kodunu değil, fiziksel S/N adedini sayar
         if "S/N" in x.columns:
             p["İşlenen S/N Adedi"] = x.groupby("Operatör")["S/N"].nunique()
         else:
@@ -996,7 +1095,6 @@ def _hafta_detayi(st, df, t, op_adi, kisa, op, tablo):
             p = x.pivot_table(index="TEZGAH", columns="Durum", values="Sure_Saat", aggfunc="sum", fill_value=0)
             p["Toplam"] = p.sum(axis=1)
             p["Operatör Sayısı"] = x.groupby("TEZGAH")["Operatör"].nunique()
-            # BURASI DEĞİŞTİ: Tezgahtan geçen fiziksel S/N adedini sayar
             if "S/N" in x.columns:
                 p["İşlenen S/N Adedi"] = x.groupby("TEZGAH")["S/N"].nunique()
             else:
@@ -1008,9 +1106,28 @@ def _hafta_detayi(st, df, t, op_adi, kisa, op, tablo):
         p["Toplam"] = p.sum(axis=1)
         p["Operatör Sayısı"] = x.groupby("Parça")["Operatör"].nunique()
         p["Kayıt"] = x.groupby("Parça").size()
-        # BURASI EKLENDİ: Parça bazında net fiziksel üretilen adet (S/N)
+        
         if "S/N" in x.columns:
-            p["Tamamlanan S/N Adedi"] = x.groupby("Parça")["S/N"].nunique()
+            sn_x = x[x["S/N"].notna()]
+            # 1. O hafta o parçada toplam kaç eşsiz (S/N + Operasyon) kombinasyonuna DOKUNULDU?
+            p["Dokunulan S/N (Op Bazlı)"] = sn_x.drop_duplicates(["S/N", "Op_No"]).groupby("Parça").size()
+            
+            # BİTTİ kolonunu bul (önceden yazdığımız _bitti_kolonu_bul fonksiyonu)
+            c_b = _bitti_kolonu(x)
+            if c_b:
+                # 2. O hafta BİTTİ yazan satırları ayıkla (Büyük/Küçük harf İ-I duyarlılığı kapatılmış güvenli maske)
+                maske_bitti = sn_x[c_b].astype(str).str.contains("BİTTİ|bitti|Bitti|BITTI|bıttı", regex=True, na=False)
+                b_ = sn_x[maske_bitti].drop_duplicates(["S/N", "Op_No"])
+                p["Tamamlanan (BİTTİ)"] = b_.groupby("Parça").size()
+                
+                # 3. Dokunulanlardan Bitenleri çıkararak Yarım Kalanı bul
+                p["Yarım Kalan (WIP)"] = (p["Dokunulan S/N (Op Bazlı)"].fillna(0) - p["Tamamlanan (BİTTİ)"].fillna(0)).clip(lower=0)
+            
+            # Oluşan yeni kolonlardaki NaN değerleri 0'a çevir ve tam sayı (int) yap
+            yeni_kolonlar = [c for c in p.columns if "S/N" in c or "BİTTİ" in c or "WIP" in c]
+            for c_ in yeni_kolonlar:
+                p[c_] = p[c_].fillna(0).astype(int)
+                
         p.insert(0, "Uzun Referans", p.index.map(x.groupby("Parça")["Uzun_Ref"].agg(_ilk_dolu)))
         st.dataframe(p.sort_values("Toplam", ascending=False).round(2).reset_index(), use_container_width=True, hide_index=True)
         
@@ -1029,7 +1146,6 @@ def _hafta_detayi(st, df, t, op_adi, kisa, op, tablo):
         ek = {"Parça": "Parça No (kısa)", "Operasyon": "Operasyon No", "Durus_Kategorisi": "Duruş Kategorisi", "Durus_Sebebi_Ham": "Duruş Sebebi",
               "ÜRETİM_C/T": "Hedef C/T (sa)", "Sapma_Yuzdesi": "Sapma %"}
         
-        # BURASI DEĞİŞTİ: Tamamen boş olan (None, NaN) "Başlangıç Saati" gibi kolonları ekrandan otomatik gizler
         df_gosterim = x[kol].copy().dropna(axis=1, how='all')
         sirala_kolonu = ["TARİH"] + (["BAŞLANGIÇ_SAAT"] if "BAŞLANGIÇ_SAAT" in df_gosterim.columns else [])
         

@@ -98,7 +98,9 @@ CANONICAL_COLUMNS = [
     "ÜRETİM_SÜRESİ", "YEMEK_MOLA_SÜRESİ", "SET-UP_SÜRESİ",
     "Haftanin_Gunu", "Hafta_Sonu",
     "kaynak", "sisteme_kayit_zamani",
-    "S/N"
+    "S/N",
+    "parça",
+    "PARÇA NO_UZUN_REFERANS"
 ]
 
 # ---------------------------------------------------------------------------

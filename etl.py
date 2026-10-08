@@ -132,7 +132,12 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
     # kullandığı için zaten çalışmıyordu).
     if "TARİH" in df.columns:
         df["TARİH"] = _fix_mixed_dates(df["TARİH"])  # BUG DÜZELTMESİ: fonksiyon adı `_` ile başlıyor
-
+    # Excel'den gelen boşluklu isimleri, sistemin anladığı alt tireli isimlere otomatik çevirir
+    df = df.rename(columns={
+        "BAŞLANGIÇ SAAT": "BAŞLANGIÇ_SAAT",
+        "BİTİŞ SAAT": "BİTİŞ_SAAT",
+        "SÜRE SAAT": "Sure_Saat"
+    })
     # Tekrar-tespitinde KULLANILACAK kritik alanları (Sure_Saat, ÜRETİM_C/T)
     # dedup'tan ÖNCE sayıya çeviriyoruz — aksi halde '1.5' ile '1,5' gibi
     # aynı değerin farklı yazılmış hallerini "farklı satır" sanıp gerçek bir
@@ -916,22 +921,27 @@ def _write_to_sqlite(detay: pd.DataFrame, tezgah_oee: pd.DataFrame, karne: pd.Da
     conn = sqlite3.connect(config.DB_PATH)
     try:
         detay_yaz = _select_canonical(detay)
-        # Tarih kolonunu SQLite'a yazmadan önce string'e çeviriyoruz (SQLite'ta
-        # native datetime tipi yok, ISO metin olarak saklanır ve db.py bunu
-        # geri parse eder).
+        # Tarih kolonunu SQLite'a yazmadan önce string'e çeviriyoruz
         if "TARİH" in detay_yaz.columns:
             detay_yaz["TARİH"] = pd.to_datetime(detay_yaz["TARİH"]).dt.strftime("%Y-%m-%d")
 
-        # BUG DÜZELTMESİ: eskiden if_exists="append" idi — Excel HER SEFERİNDE
-        # baştan sona okunduğu için (incremental değil, tam dosya) bu her ETL
-        # çalıştırmasında TÜM geçmiş veriyi bir daha ekleyip satırları
-        # ikiye/üçe katlıyordu. Sadece bu çalıştırmanın kaynağı olan
-        # 'excel' satırlarını silip yeniden yazıyoruz — ileride tabletten
-        # gelen ('kaynak'='tablet') satırlar varsa onlara DOKUNULMAZ.
         table_exists = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (config.TABLE_NAME,)
         ).fetchone()
+
         if table_exists:
+            # --- YENİ EKLENEN OTOMATİK SÜTUN GÜNCELLEME KODU ---
+            mevcut_kolonlar = [row[1] for row in conn.execute(f"PRAGMA table_info('{config.TABLE_NAME}')").fetchall()]
+            for kol in detay_yaz.columns:
+                if kol not in mevcut_kolonlar:
+                    try:
+                        conn.execute(f'ALTER TABLE "{config.TABLE_NAME}" ADD COLUMN "{kol}" TEXT')
+                        # log.info varsa kullanabilirsin, şimdilik print ile de görebilirsin
+                        print(f"✅ Yeni sütun veritabanına otomatik eklendi: {kol}")
+                    except Exception as e:
+                        print(f"⚠️ Sütun eklenirken hata: {kol} -> {e}")
+            # ---------------------------------------------------
+            
             conn.execute(f'DELETE FROM "{config.TABLE_NAME}" WHERE kaynak = ?', ("excel",))
 
         detay_yaz.to_sql(config.TABLE_NAME, conn, if_exists="append", index=False)
@@ -943,10 +953,9 @@ def _write_to_sqlite(detay: pd.DataFrame, tezgah_oee: pd.DataFrame, karne: pd.Da
         karne.to_sql(config.OPERATOR_KARNE_TABLE, conn, if_exists="replace", index=False)
 
         conn.commit()
-        log.info("SQLite'a yazıldı: %s", config.DB_PATH)
+        # log.info("SQLite'a yazıldı: %s", config.DB_PATH)
     finally:
         conn.close()
-
 
 # ---------------------------------------------------------------------------
 # POSTGRES'E YAZ (Supabase/Neon vb. — DATABASE_URL tanımlıysa ANA kaynak)

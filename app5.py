@@ -46,21 +46,22 @@ GUNCELLEME_ESIGI_YUZDE = 15
 KAPSAM_ESIGI = 0.5
 OEE_REFERANS = 85
 
+T_GUNLUK = "📝 Basit Günlük Rapor"     # <--- BUNU EKLEDİK
 T_TEZGAH = "📊 Tezgah Özeti"
 T_PARETO = "⏱ Duruş Pareto ve Analizi"
 T_OPERATOR = "👷 Operatör Karnesi"
 T_KRONO = "📅 Kronolojik Üretim Dökümü"
 T_FORMUL = "📐 Metrikler ve Formüller"
 T_SN = "📦 Parça S/N İzleme"
-# T_KAPASITE ve T_CT sekmeleri listeden çıkarıldı (şu anlık devre dışı)
+
 SEKMELER = [
-    T_TEZGAH, T_PARETO, T_OPERATOR, T_KRONO, T_FORMUL, T_SN
+    T_GUNLUK, T_TEZGAH, T_PARETO, T_OPERATOR, T_KRONO, T_FORMUL, T_SN   # <--- EN BAŞA T_GUNLUK KOYDUK
 ]
 
 KRONO_KOLONLAR = [
     ("TARİH", "Tarih"), ("VARDİYA", "Vardiya"), ("BAŞLANGIÇ_SAAT", "Başlangıç Saati"), ("BİTİŞ_SAAT", "Bitiş Saati"),
     ("TEZGAH", "Tezgah"), ("Operator_Kod", "Operatör (Gerçek İsim)"), ("PARÇA NO_ÜRETİM_GİRİLEN", "Parça No"),
-    ("OPERASYON_NO", "Operasyon No"), ("Durum", "Durum"), ("Durus_Kategorisi", "Duruş Kategorisi"),
+    ("OPERASYON_NO", "Operasyon No"), ("S/N", "S/N"), ("Durum", "Durum"), ("Durus_Kategorisi", "Duruş Kategorisi"),
     ("Durus_Sebebi_Ham", "Duruş Sebebi"), ("Sure_Saat", "Gerçekleşen Süre (Saat)"), ("ÜRETİM_C/T", "Hedef C/T (Saat)"),
     ("Sapma_Saat", "Sapma (Saat)"), ("Sapma_Yuzdesi", "Sapma (%)"),
 ]
@@ -160,6 +161,12 @@ st.set_page_config(page_title="Üretim Zekası Dashboard", layout="wide", page_i
 st.title("🏭 Üretim Zekası ve Karar Destek Dashboard'u")
 
 df_ham, df, kaynak_notu = veri_yukle_ve_filtrele("home")
+
+# YENİ EKLENEN ÇÖP VERİ FİLTRESİ (Dashboard ve Yapay Zeka rakamlarını %100 eşitler)
+if "Sure_Saat" in df_ham.columns and "Durum" in df_ham.columns:
+    df_ham = df_ham[~((df_ham["Durum"] == "Üretim") & (df_ham["Sure_Saat"] < 0.05))]
+    df = df[~((df["Durum"] == "Üretim") & (df["Sure_Saat"] < 0.05))]
+
 st.caption(kaynak_notu)
 
 if df.empty:
@@ -219,7 +226,100 @@ with st.expander("🔎 Veri Kapsamı ve Kalite Kontrolü — rakamlara ne kadar 
 st.markdown("---")
 
 sekme = dict(zip(SEKMELER, st.tabs(SEKMELER)))
+# =============================================================================
+# SEKME 0: BASİT GÜNLÜK RAPOR (PATRON GÖRÜNÜMÜ)
+# =============================================================================
+with sekme[T_GUNLUK]:
+    st.subheader("📅 Günlük Üretim Raporu")
+    st.caption("Karmaşık formüller yok. Seçilen günde fabrikada kim, hangi tezgahta, ne yaptı?")
 
+    # En son hangi gün veri girildiyse otomatik o günü seçili getir
+    varsayilan_gun = df["TARİH"].max().date() if "TARİH" in df.columns and not df["TARİH"].isna().all() else None
+    
+    if not varsayilan_gun:
+        st.info("Gösterilecek tarih verisi bulunamadı.")
+    else:
+        # Üst Filtreler (Çok Basit Seçimler)
+        g1, g2, g3, g4 = st.columns(4)
+        secilen_gun = g1.date_input("📅 Rapor Günü", value=varsayilan_gun)
+        
+        # Veriyi SADECE SEÇİLEN GÜNE göre süz
+        gun_df = df[df["TARİH"].dt.date == secilen_gun].copy()
+        
+        if gun_df.empty:
+            st.warning(f"{secilen_gun.strftime('%d.%m.%Y')} tarihinde üretim kaydı bulunamadı.")
+        else:
+            vardiyalar = ["Tümü"] + sorted(gun_df["VARDİYA"].dropna().astype(str).unique()) if "VARDİYA" in gun_df.columns else ["Tümü"]
+            tezgahlar = ["Tümü"] + sorted(gun_df["TEZGAH"].dropna().astype(str).unique()) if "TEZGAH" in gun_df.columns else ["Tümü"]
+            operatorler = ["Tümü"] + sorted(gun_df["Operator_Kod"].dropna().astype(str).unique()) if "Operator_Kod" in gun_df.columns else ["Tümü"]
+
+            sec_var = g2.selectbox("Vardiya", vardiyalar)
+            sec_tez = g3.selectbox("Tezgah", tezgahlar)
+            sec_op = g4.selectbox("Operatör", operatorler)
+
+            # Ekranda patron bir filtre seçerse uygula
+            if sec_var != "Tümü": gun_df = gun_df[gun_df["VARDİYA"].astype(str) == sec_var]
+            if sec_tez != "Tümü": gun_df = gun_df[gun_df["TEZGAH"].astype(str) == sec_tez]
+            if sec_op != "Tümü": gun_df = gun_df[gun_df["Operator_Kod"].astype(str) == sec_op]
+
+            st.markdown("---")
+            
+            # Dev Rakamlarla O Günün Özeti
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("👷 Çalışan Kişi", gun_df["Operator_Kod"].nunique() if "Operator_Kod" in gun_df.columns else 0)
+            k2.metric("🏭 Aktif Tezgah", gun_df["TEZGAH"].nunique() if "TEZGAH" in gun_df.columns else 0)
+            k3.metric("⏱️ Toplam Mesai", f"{gun_df['Sure_Saat'].sum():.1f} Saat" if "Sure_Saat" in gun_df.columns else "0 Saat")
+            
+            # O gün içindeki eşsiz Seri Numarası sayısı
+            sn_adet = gun_df["S/N"].nunique() if "S/N" in gun_df.columns else 0
+            k4.metric("📦 İşlem Gören S/N (Adet)", sn_adet)
+            
+            st.markdown(f"**📋 {secilen_gun.strftime('%d.%m.%Y')} Üretim ve Duruş Kayıtları (Tüm Liste)**")
+            
+            # Excel Görünümlü Dümdüz Tabloyu Hazırla
+            kolonlar = []
+            isimler = {}
+            standart_kolonlar = [
+                ("VARDİYA", "Vardiya"), ("BAŞLANGIÇ_SAAT", "Başlangıç"), ("BİTİŞ_SAAT", "Bitiş"), 
+                ("TEZGAH", "Tezgah"), ("Operator_Kod", "Operatör"), ("KOD & OPE.", "Parça & Operasyon"), 
+                ("S/N", "Seri No"), ("Durum", "Durum")
+            ]
+            for k, ad in standart_kolonlar:
+                if k in gun_df.columns:
+                    kolonlar.append(k)
+                    isimler[k] = ad
+            
+            # "BİTTİ" (parça) kolonu varsa otomatik ekle
+            for c in gun_df.columns:
+                if str(c).lower().strip() in ["parça", "parca", "finish", "bitti"]:
+                    kolonlar.append(c)
+                    isimler[c] = "Tamamlandı Mı?"
+                    break
+                    
+            if "Sure_Saat" in gun_df.columns:
+                kolonlar.append("Sure_Saat")
+                isimler["Sure_Saat"] = "Süre (Saat)"
+
+            tablo = gun_df[kolonlar].rename(columns=isimler).copy()
+            
+            # Tabloyu okuması kolay olsun diye Vardiya -> Saat -> Tezgah sırasına diziyoruz
+            sirala = [c for c in ["Vardiya", "Başlangıç", "Tezgah"] if c in tablo.columns]
+            if sirala:
+                tablo = tablo.sort_values(sirala)
+                
+            if "Süre (Saat)" in tablo.columns:
+                tablo["Süre (Saat)"] = tablo["Süre (Saat)"].round(2)
+                
+            # Ekrana bas
+            st.dataframe(tablo, use_container_width=True, hide_index=True)
+            
+            # Hızlıca alıp kendi Excel'inde evirebilmesi için buton
+            st.download_button(
+                label="⬇️ Listeyi Excel (CSV) Olarak İndir",
+                data=tablo.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"Gunluk_Uretim_Raporu_{secilen_gun.strftime('%Y_%m_%d')}.csv",
+                mime="text/csv"
+            )
 # =============================================================================
 # SEKME 1: TEZGAH ÖZETİ
 # =============================================================================
@@ -339,7 +439,7 @@ with sekme[T_PARETO]:
 # =============================================================================
 with sekme[T_OPERATOR]:
     
-    # ÇÖP VERİ FİLTRESİ: 0.05 saatten küçük veya hedefin %10'undan küçük çöp verileri Emsal/Ortalama hesaplarından dışla
+    # ÇÖP VERİ FİLTRESİ
     if "ÜRETİM_C/T" in df.columns:
         df_temiz_karne = df[~((df["Durum"] == "Üretim") & ((df["Sure_Saat"] < 0.05) | (df["Sure_Saat"] < (df["ÜRETİM_C/T"] * 0.10))))].copy()
     else:
@@ -357,7 +457,6 @@ with sekme[T_OPERATOR]:
             f"eşik altında kalan: {max(uretimde_olan - len(karne), 0)} · emsal referansı: **tüm veri**, en az {EMSAL_MIN_TEKRAR} tekrarlı kodlar."
         )
         
-        # Gereksiz kolonları siliyoruz: İslem_Sayisi, Islem_Saat_Hizi, CT_Dusuk_Guven_Satir_Sayisi, CT_Dusuk_Guven_Yuzde
         kg = karne.rename(columns={
             "Operator_Kod": "Operatör", "Toplam_Saat": "Toplam Saat",
             "CT_Bazli_Sapma_Yuzde": "CT Sapması (%)", "Emsal_Bazli_Sapma_Yuzde": "Emsal Sapması (%)",
@@ -429,20 +528,21 @@ with sekme[T_KRONO]:
     sec_tezgah = f2.multiselect("Tezgah", tezgahlar, default=tezgahlar, key="krono_tezgah")
     operatorler = sorted(z["Operator_Kod"].dropna().unique())
     sec_op = f3.multiselect("Operatör", operatorler, default=operatorler, key="krono_op")
-    arama = f4.text_input("Parça / kod ara", key="krono_ara", placeholder="örn. M14P04")
+    arama = f4.text_input("Parça / kod / S/N ara", key="krono_ara", placeholder="örn. M14P04 veya 2H50M")
 
     maske = z["Durum"].isin(sec_durum) & z["TEZGAH"].isin(sec_tezgah) & z["Operator_Kod"].isin(sec_op)
     if arama:
         a = arama.strip().lower()
         maske &= (z["KOD & OPE."].astype(str).str.lower().str.contains(a, regex=False)
-                  | z["PARÇA NO_ÜRETİM_GİRİLEN"].astype(str).str.lower().str.contains(a, regex=False))
+                  | z["PARÇA NO_ÜRETİM_GİRİLEN"].astype(str).str.lower().str.contains(a, regex=False)
+                  | z["S/N"].astype(str).str.lower().str.contains(a, regex=False))
     gorunum = z[maske].reset_index(drop=True)
 
     tablo = gorunum[[k for k, _ in KRONO_KOLONLAR]].rename(columns=dict(KRONO_KOLONLAR))
     tablo["Tarih"] = pd.to_datetime(tablo["Tarih"]).dt.date
     for c in ["Gerçekleşen Süre (Saat)", "Hedef C/T (Saat)", "Sapma (Saat)", "Sapma (%)"]:
         tablo[c] = pd.to_numeric(tablo[c], errors="coerce")
-    for c in ["Vardiya", "Başlangıç Saati", "Bitiş Saati", "Tezgah", "Operatör (Gerçek İsim)", "Parça No", "Operasyon No", "Durum", "Duruş Kategorisi", "Duruş Sebebi"]:
+    for c in ["Vardiya", "Başlangıç Saati", "Bitiş Saati", "Tezgah", "Operatör (Gerçek İsim)", "Parça No", "Operasyon No", "Durum", "Duruş Kategorisi", "Duruş Sebebi", "S/N"]:
         tablo[c] = tablo[c].astype("object").where(tablo[c].notna(), "-").astype(str)
     cfg = {"Tarih": st.column_config.DateColumn(format="DD.MM.YYYY"),
            "Gerçekleşen Süre (Saat)": st.column_config.NumberColumn(format="%.2f"), "Hedef C/T (Saat)": st.column_config.NumberColumn(format="%.2f"),
@@ -475,6 +575,16 @@ with sekme[T_KRONO]:
                 st.markdown(f"- {y}")
             if not yorumlar:
                 st.caption("Bu kayıt türü için ek yorum yok.")
+            
+            # S/N GEÇMİŞİ (Girinti hatası düzeltildi!)
+            sn_ = satir.get("S/N")
+            if pd.notna(sn_) and "S/N" in df_ham.columns:
+                gecmis = df_ham[df_ham["S/N"] == sn_]
+                kol_ = [c for c in ["TARİH", "VARDİYA", "BAŞLANGIÇ_SAAT", "BİTİŞ_SAAT", "TEZGAH", "Operator_Kod", "PARÇA NO_ÜRETİM_GİRİLEN",
+                                    "OPERASYON_NO", "Durum", "Sure_Saat"] if c in gecmis.columns]
+                st.markdown(f"**🔗 {sn_} — bu S/N'nin tüm kayıtları (tüm tarihler)**")
+                st.dataframe(gecmis.sort_values([c for c in ["TARİH", "BAŞLANGIÇ_SAAT"] if c in gecmis.columns])[kol_],
+                             hide_index=True, use_container_width=True)
 
 
 # =============================================================================
@@ -524,7 +634,9 @@ with sekme[T_FORMUL]:
           ["Sure_Saat", "KOD & OPE.", "Durum", "Operator_Kod"], None)
 
 with sekme[T_SN]:
-    render_sn_sekmesi(df)
+    # GÜNCELLENDİ: Hem df_ham eklendi hem de operatör isim dönüşümü (op_adi=op_ad) sağlandı
+    render_sn_sekmesi(df, op_adi=op_ad, df_ham=df_ham)
+
 # ====================================================================================
 # GEÇİCİ DEVRE DIŞI BIRAKILAN MODÜLLER (Patron talebi üzerine ekrandan kaldırıldı)
 # İleride açmak için 'if False:' kısımlarını 'if True:' yapıp 'SEKMELER' listesine ekleyin.
@@ -539,9 +651,10 @@ if False: # with sekme[T_KAPASITE]:
 if False: # with sekme[T_CT]:
     st.subheader("⚠️ Katalog C/T (Cycle Time) Analizi ve Kanıtlar")
     ct = compute_ct_guvenilirlik(df)
-    kanit = ct_kanit_hesapla(df)
-    if ct.get("gecerli") and kanit.get("gecerli"):
-        st.dataframe(kanit["tablo"], use_container_width=True, hide_index=True)
+    # HATA VERMEMESİ İÇİN KAPATILDI (NameError: ct_kanit_hesapla)
+    # kanit = ct_kanit_hesapla(df)
+    # if ct.get("gecerli") and kanit.get("gecerli"):
+    #     st.dataframe(kanit["tablo"], use_container_width=True, hide_index=True)
 
 # ====================================================================================
 # AŞAĞIDAKİ KODLAR GİZLENMİŞ MODÜLLERDİR (SİLİNMEMİŞTİR)

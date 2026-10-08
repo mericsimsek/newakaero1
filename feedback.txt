@@ -110,3 +110,12 @@ TABLO 8'e kronolojik sırayla bak: AB-10 tezgahında gece vardiyasında (23:00-0
  TABLO 8 ve TABLO 10'u kullanarak cevapla: 2G93R seri numaralı parça 3 farklı usta gezmiş. Bir ustadan diğerine geçerken tezgahta hiç işlem görmeden beklediği (ölü) süre toplam kaç saat?
 
  2547M01G03 M01G03 60 a göre 33 weekte kaç parça çıkmış ve parçaların çıkış ortalamaları ne sapan operatör var mı
+
+
+
+
+
+
+
+bitti kısmını düzelt 
+
