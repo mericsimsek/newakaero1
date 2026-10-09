@@ -17,7 +17,7 @@ OPERATOR_SOZLUGU = {
     "Op_005": "EREN TAMER YELEKÇİ", "Op_006": "ERTUĞRUL ÖZDEMİR", "Op_007": "HAMZA KARAASLAN", "Op_008": "HÜSEYİN YENİCE",
     "Op_009": "HÜSEYİN YILMAZ", "Op_010": "İLKER SEZDİ", "Op_011": "MEHMET ALİ ÇOLAK", "Op_012": "MEHMET EMRE KARAKAŞ",
     "Op_013": "MERT KUŞCU", "Op_014": "MESUT ARDIÇ", "Op_015": "MUHAMMED KORKMAZ", "Op_016": "NAZİF GÜÇLÜDAĞ",
-    "Op_017": "NURULLAH ZENGİN", "Op_018": "ÖZCAN ÇELİK", "Op_019": "TANER GÜÇLÜDAĞ", "Op_020": "UMUT ÖZKAN", "Op_021": "YAŞAR ŞENOL",
+    "Op_017": "NURULLAH ZENGİN", "Op_018": "ÖZCAN ÇELİK", "Op_019": "TANER GÜÇLÜDAĞ", "Op_020": "UMUT ÖZKAN", "Op_021": "YAŞAR ŞENOL","Op_022": "ALİ ÖZTEKİN",
 }
 CALISMA = ["Üretim", "Set_Up", "Rework"]
 _TR = str.maketrans("İıŞşĞğÜüÖöÇç", "IiSsGgUuOoCc")
@@ -52,12 +52,10 @@ def _hm(dk):
     return "-" if pd.isna(dk) else f"{int(dk) % 1440 // 60:02d}:{int(dk) % 60:02d}"
 
 def _bas_zaman(tarih, vard, bas_dk):
-    if pd.isna(tarih) or pd.isna(bas_dk): return pd.NaT
-    gun = pd.Timestamp(tarih).normalize()
-    vb, ve = _vardiya(vard)
-    if not pd.isna(vb) and ve < vb and bas_dk < vb:
-        gun += pd.Timedelta(days=1)
-    return gun + pd.Timedelta(minutes=float(bas_dk))
+    """Excel'deki takvim gününe başlangıç saatini ekler. Vardiya ne olursa olsun gün eklemez."""
+    if pd.isna(tarih) or pd.isna(bas_dk):
+        return pd.NaT
+    return pd.Timestamp(tarih).normalize() + pd.Timedelta(minutes=float(bas_dk))
 
 def _bitti_maske(s: pd.Series) -> pd.Series:
     return (s.astype(str).str.replace("\u0307", "", regex=False).str.translate(_TR)
@@ -78,6 +76,76 @@ def _bitti_kolonu(x: pd.DataFrame):
 def _op_sirala(v):
     return (not v.isdigit(), int(v) if v.isdigit() else 0, v)
 
+def sn_sayilari(d: pd.DataFrame) -> tuple[int, int]:
+    """(İşlem gören eşsiz S/N, tamamlanan (BİTTİ) eşsiz S/N). Anahtar: Parça + S/N."""
+    s = d[(d["Durum"] == "Üretim") & d["S/N"].notna()]
+    if s.empty:
+        return 0, 0
+    anahtar = s["Parça"].fillna("-") + "|" + s["Op"].fillna("-") + "|" + s["S/N"]
+    return int(anahtar.nunique()), int(anahtar[s["_bitti"]].nunique())
+
+def gunluk_ai_baglami_olustur(df_tablo: pd.DataFrame, secili_tarih) -> str:
+    """Ekrandaki filtrelenmiş tabloyu AI için kısa bir metne çevirir. Sadece str döndürür."""
+    if isinstance(secili_tarih, (tuple, list)) and len(secili_tarih) > 0:
+        a, b = secili_tarih[0], secili_tarih[-1]
+        tarih_txt = a.strftime("%d.%m.%Y") if a == b else f"{a.strftime('%d.%m.%Y')} – {b.strftime('%d.%m.%Y')}"
+    else:
+        tarih_txt = secili_tarih.strftime("%d.%m.%Y") if hasattr(secili_tarih, "strftime") else str(secili_tarih)
+
+    if df_tablo is None or df_tablo.empty:
+        return f"Tarih: {tarih_txt} | Bu filtrelerle kayıt yok."
+
+    uretim = df_tablo.loc[df_tablo["Durum"] == "Üretim", "Süre"].sum()
+    durus_m = df_tablo["Durum"].astype(str).str.contains("Duru", case=False, na=False)
+    durus = df_tablo.loc[durus_m, "Süre"].sum()
+    setup_rw = df_tablo.loc[df_tablo["Durum"].isin(["Set_Up", "Rework"]), "Süre"].sum()
+    sn_islem, sn_biten = sn_sayilari(df_tablo)
+
+    satirlar = [
+        f"Tarih: {tarih_txt} | Listelenen satır: {len(df_tablo)}",
+        f"Üretim: {uretim:.1f} sa | Duruş: {durus:.1f} sa | Set-up+Rework: {setup_rw:.1f} sa",
+        f"İşlem gören eşsiz S/N: {sn_islem} | Tamamlanan (BİTTİ) S/N: {sn_biten}",
+    ]
+
+    d = df_tablo[durus_m]
+    if not d.empty:
+        sebep = (d[d["Sebep"].astype(str).str.strip() != ""]
+                 .groupby("Sebep")["Süre"].sum().sort_values(ascending=False).head(3))
+        if not sebep.empty:
+            satirlar.append("En çok duruş sebebi: " + "; ".join(f"{k} ({v:.1f}sa)" for k, v in sebep.items()))
+        tez = d.groupby("Tezgah")["Süre"].sum().sort_values(ascending=False).head(3)
+        if not tez.empty:
+            satirlar.append("En çok duran tezgah: " + "; ".join(f"{k} ({v:.1f}sa)" for k, v in tez.items()))
+
+    return "\n".join(satirlar)
+
+_SESLI = "aıoueiöü"
+_INCE = "eiöü"
+
+def _tr_kucuk(s: str) -> str:
+    return s.replace("İ", "i").replace("I", "ı").lower()
+
+def _ad_ek(ad: str, hal: str) -> str:
+    """İsme yönelme (-e/-a) veya ayrılma (-den/-dan) eki ekler: YAŞAR'a, EMRE'ye, HÜSEYİN'den, MERT'ten."""
+    k = _tr_kucuk(ad)
+    son_sesli = next((c for c in reversed(k) if c in _SESLI), "a")
+    ince = son_sesli in _INCE
+    if hal == "e":
+        ek = ("y" if k[-1] in _SESLI else "") + ("e" if ince else "a")
+    else:
+        ek = ("t" if k[-1] in "çfhkpsşt" else "d") + ("en" if ince else "an")
+    return f"{ad}'{ek}"
+
+def _devir_metni(ben, onceki, sonraki) -> str:
+    al = isinstance(onceki, str) and onceki != ben     # ardışık aynı kişi = devir değil
+    ver = isinstance(sonraki, str) and sonraki != ben
+    if al and ver:
+        return f"← {_ad_ek(onceki, 'den')} aldı ➔ {_ad_ek(sonraki, 'e')} devretti"
+    if ver:
+        return f"➔ {_ad_ek(sonraki, 'e')} devretti"
+    if al:
+        return f"← {_ad_ek(onceki, 'den')} devraldı"
+    return ""
 @st.cache_data(show_spinner="Veri hazırlanıyor…")
 def hazirla(veri: pd.DataFrame):
     x = veri.reset_index(drop=True)
@@ -125,31 +193,26 @@ def hazirla(veri: pd.DataFrame):
         return d_clean
     T["Durum / Sebep"] = [format_durum(d, s) for d, s in zip(T["Durum"], T["Sebep"])]
 
-    # --- S/N Süreci: Anlaşılır Zincir Mantığı (Kafa Karıştıran Devir İptal) ---
+        # --- S/N Yolculuğu: sıralı devir zinciri ---
+        # --- S/N zinciri: Adet (son satır) + İşlem Adımı (devir) ---
     U = T[(T["Durum"] == "Üretim") & T["S/N"].notna()].copy()
     U["_a"] = U["Parça"].fillna("-") + "|" + U["Op"].fillna("-") + "|" + U["S/N"]
     U = U.sort_values(["_a", "_bas", "_bit_dk"], na_position="last")
-    
-    def surec_zinciri(df_grup):
-        parcalar = [f"{row['Operatör'].split()[0]} ({row['Süre']:.2f}sa)" for _, row in df_grup.iterrows()]
-        return " ➔ ".join(parcalar)
-    
-    if not U.empty:
-        surec_map = U.groupby("_a", sort=False).apply(surec_zinciri)
-        U["S/N İşlem Geçmişi"] = U["_a"].map(surec_map)
-    else:
-        U["S/N İşlem Geçmişi"] = ""
-
     g = U.groupby("_a", sort=False)
-    if c_bitti:
-        U["_bs"] = g["_bitti"].cumsum()
-        U["_adet"] = (U["_bitti"] & (U["_bs"] == 1)).astype(int)
-        U["Adet"] = np.where(U["_adet"] == 1, "1", "")
-    else:
-        U["_adet"], U["Adet"] = 0, ""
+
+    # KURAL 1: grupta BİTTİ varsa "1", grubun kronolojik EN SON satırına yazılır
+    son_satir = ~U.duplicated("_a", keep="last")
+    U["_adet"] = (g["_bitti"].transform("any") & son_satir).astype(int)
+    U["Adet"] = np.where(U["_adet"] == 1, "1", "")
+
+    # KURAL 2: satırın grup içindeki konumuna göre sadece o satırın devir bilgisi
+    kisa = U["Operatör"].map(lambda a: " ".join(a.split()[:2]) if a and a != "-" else "?")
+    onceki = kisa.groupby(U["_a"]).shift(1)
+    sonraki = kisa.groupby(U["_a"]).shift(-1)
+    U["İşlem Adımı"] = [_devir_metni(b, o, s) for b, o, s in zip(kisa, onceki, sonraki)]
 
     T["_a"] = U["_a"].reindex(T.index)
-    T["S/N İşlem Geçmişi"] = U["S/N İşlem Geçmişi"].reindex(T.index).fillna("")
+    T["İşlem Adımı"] = U["İşlem Adımı"].reindex(T.index).fillna("")
     T["Adet"] = U["Adet"].reindex(T.index).fillna("")
     T["_adet"] = U["_adet"].reindex(T.index).fillna(0).astype(int)
     return T, c_bitti
@@ -167,7 +230,8 @@ if T.empty or T["Tarih"].notna().sum() == 0:
     st.stop()
 
 mn, mx = T["Tarih"].min().date(), T["Tarih"].max().date()
-sec = st.date_input("📅 Tarih (tek gün ya da aralık)", value=(mx, mx), min_value=mn, max_value=mx, format="DD.MM.YYYY")
+sec = st.date_input("📅 Tarih (tek gün ya da aralık)", value=(mx, mx), min_value=mn, max_value=mx,
+                    format="DD.MM.YYYY", key="f_tarih")
 if isinstance(sec, (tuple, list)):
     if not sec: st.stop()
     d_bas, d_bit = sec[0], sec[-1]
@@ -181,25 +245,32 @@ if G.empty:
 
 calisma = G[G["Durum"].isin(CALISMA)]
 st.markdown("### 🏢 Fabrika Genel Durumu (Seçili Tarih)")
-k1, k2, k3, k4 = st.columns(4)
+sn_islem, sn_biten = sn_sayilari(G)
+
+k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("👷 Toplam Çalışan", calisma["Operatör"].nunique())
 k2.metric("🏭 Aktif Tezgah", calisma["Tezgah"].nunique())
 k3.metric("⏱️ Toplam Kayıtlı Süre", f"{G['Süre'].sum():,.1f} sa")
-k4.metric("📦 Toplam Biten S/N", int(G["_adet"].sum()) if c_bitti else "—")
+k4.metric("📦 İşlem Gören S/N", sn_islem, help="Seçili tarihte en az bir üretim kaydı olan eşsiz S/N sayısı.")
+k5.metric("✅ Tamamlanan (BİTTİ)", sn_biten if c_bitti else "—",
+          help="Seçili tarihte 'BİTTİ' işareti alan eşsiz S/N sayısı.")
 st.markdown("---")
 
 st.markdown("### 🔍 Detaylı İnceleme ve Filtreler")
 c1, c2, c3 = st.columns(3)
-s_tez = c1.multiselect("🏭 Tezgah", sorted(G["Tezgah"].unique()), placeholder="Tümü")
-s_kisi = c2.multiselect("👷 Operatör", sorted(G["Operatör"].unique()), placeholder="Tümü")
-s_durum = c3.multiselect("Tür (Üretim/Duruş)", sorted(G["Durum"].unique()), placeholder="Tümü", format_func=lambda d: d.replace("_", " "))
+s_tez = c1.multiselect("🏭 Tezgah", sorted(T["Tezgah"].unique()), placeholder="Tümü", key="f_tez")
+s_kisi = c2.multiselect("👷 Operatör", sorted(T["Operatör"].unique()), placeholder="Tümü", key="f_kisi")
+s_durum = c3.multiselect("Tür (Üretim/Duruş)", sorted(T["Durum"].unique()), placeholder="Tümü",
+                         format_func=lambda d: d.replace("_", " "), key="f_durum")
 
 d1, d2, d3, d4, d5 = st.columns([2, 2, 1, 2, 2])
-s_parca = d1.multiselect("🔩 Parça Kodu", sorted(G["Parça"].dropna().unique()), placeholder="Tümü")
-s_uzun = d2.multiselect("🏷️ Uzun Referans", sorted(G["Uzun Ref"].replace("-", np.nan).dropna().unique()), placeholder="Tümü")
-s_op = d3.multiselect("⚙️ Op", sorted(G["Op"].dropna().unique(), key=_op_sirala), placeholder="Tümü")
-s_ara = d4.text_input("🔎 Arama (S/N)", placeholder="Örn: 2H50M")
-s_sira = d5.radio("Sırala", ["⏱ Tezgah ve Zaman", "🔗 S/N'ye Göre (Grupla)"], horizontal=True)
+s_parca = d1.multiselect("🔩 Parça Kodu", sorted(T["Parça"].dropna().unique()), placeholder="Tümü", key="f_parca")
+s_uzun = d2.multiselect("🏷️ Uzun Referans", sorted(T["Uzun Ref"].replace("-", np.nan).dropna().unique()),
+                        placeholder="Tümü", key="f_uzun")
+s_op = d3.multiselect("⚙️ Op", sorted(T["Op"].dropna().unique(), key=_op_sirala), placeholder="Tümü", key="f_op")
+s_ara = d4.text_input("🔎 Arama (S/N)", placeholder="Örn: 2H50M", key="f_ara")
+s_sira = d5.radio("Sırala", ["⏱ Tezgah ve Zaman", "🔗 S/N'ye Göre (Grupla)"], horizontal=True, key="f_sira")
+
 
 x = G
 for kol, secim in (("Tezgah", s_tez), ("Operatör", s_kisi), ("Durum", s_durum), ("Parça", s_parca), ("Uzun Ref", s_uzun), ("Op", s_op)):
@@ -217,6 +288,10 @@ else:
     x = (x.assign(_k=anahtar, _ilk=x.groupby(anahtar)["_bas"].transform("min"))
          .sort_values(["_ilk", "_k", "_bas"], na_position="last"))
 
+if x.empty:
+    st.info("Seçili tarih ve filtrelerle eşleşen kayıt yok. Filtre seçimlerin korunuyor; tarihi ya da filtreleri değiştirebilirsin.")
+    st.stop()
+
 if not x.empty and (s_tez or s_kisi or s_durum or s_parca or s_uzun):
     st.info(f"**Aşağıdaki Tablonun Özeti:** Toplam {len(x)} satır listelendi.")
     o_uretim = x[x["Durum"] == "Üretim"]["Süre"].sum()
@@ -231,7 +306,7 @@ if not x.empty and (s_tez or s_kisi or s_durum or s_parca or s_uzun):
     oz4.metric("📦 Çıkan Net Adet", int(x["_adet"].sum()) if c_bitti else "—")
 
 gos = x[["Tarih", "Vardiya", "Saat", "Tezgah", "Operatör", "Parça – Op", "Uzun Ref", "S/N", 
-         "S/N İşlem Geçmişi", "Süre", "Adet", "Durum / Sebep"]].copy()
+         "İşlem Adımı", "Süre", "Adet", "Durum / Sebep"]].copy()
 
 gos["Tarih"] = gos["Tarih"].dt.date
 gos["S/N"] = gos["S/N"].fillna("")
@@ -241,3 +316,8 @@ st.dataframe(gos, use_container_width=True, hide_index=True, height=650, column_
     "Tarih": st.column_config.DateColumn(format="DD.MM.YYYY"),
     "Süre (sa)": st.column_config.NumberColumn(format="%.2f"),
 })
+ai_baglam = gunluk_ai_baglami_olustur(x, (d_bas, d_bit))
+st.session_state["gunluk_ai_baglami"] = ai_baglam   # AI sayfası buradan okuyabilir
+
+with st.expander("🤖 AI'a giden günlük özet (önizleme)"):
+    st.code(ai_baglam, language=None)

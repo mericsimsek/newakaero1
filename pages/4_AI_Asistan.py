@@ -252,7 +252,11 @@ KURALLAR:
 --- VERİ TABLOLARI (CSV) ---
 {baglam}
 """
+_gunluk = st.session_state.get("gunluk_ai_baglami")
+if _gunluk:
+    baglam = baglam + "\n\n### GÜNLÜK AKIŞ SAYFASI ÖZETİ\n" + _gunluk
 
+    
 _tahmini_token = len(SISTEM_PROMPTU) // 3  # Türkçe CSV için kaba tahmin
 st.sidebar.caption(f"Tahmini bağlam: ~{_tahmini_token:,} token")
 if _tahmini_token > 8000:

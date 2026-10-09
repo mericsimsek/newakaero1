@@ -1,0 +1,48 @@
+En önemli 5
+
+1. Çift blok geceler (48 saat, en ciddisi)
+
+Gece	Kişi / Tezgâh	Blok A (Giriş satırı)	Blok B	Çift saat
+06→07.10	Yaşar, AB-07→AB-10 / AB-10	4793–4799	4828–4832	12
+07→08.10	Taner, AB-06	4865–4870	4887–4892	12
+07→08.10	Ertuğrul, AB-09	4811–4819	4943–4954	8
+05→06.10	Nazif, AB-03	4636–4639	4682–4684	8
+05→06.10	Ertuğrul, AB-07 ve AB-09	4656–4659	4717–4727	8
+İpucu 1: B blokları dosyada A’dan 22–132 satır sonra girilmiş, yani sonradan eklenmiş.
+İpucu 2: 06→07.10 gecesi AB-06 ve AB-09'da hiç kayıt yok, 05→06.10 gecesi AB-08'de gece kaydı yok. İkinci blok, o tezgâhların operatörünün formu olabilir ve yanlış isim ya da tezgâhla girilmiş olabilir.
+Ne yapacaksın: O gecelerin formlarını çek. Her blokta kimin yazdığına, imzaya ve S/N’lerin üretim fişine bak.
+Karar: Farklı kişiyse isim/tezgâhı düzelt, aynı işin kopyasıysa B’yi sil. Ertuğrul’un 05→06 gecesi iki tezgâhı birden takip etmiş olabilir, ona sor.
+
+2. İki kez BİTTİ olan S/N’ler (12 S/N)
+
+2H561 (OP70): Ertuğrul 1,0 + Muhammed 1,0 = zaten tam C/T (2,0). Muhammed bir de 2,0 daha girmiş, toplam 4,0.
+2H560 (OP70): 2,0 + 2,0 = 4,0.
+2H500 (OP30): Nazif iki kez 2,5 girmiş. İkinci kayıt (satır 4682) 1. maddedeki B bloğunun içinde, o blok çözülünce bu da kapanır.
+Diğerleri: 2H503, 2H507 (OP30), 2H51U (OP60), 2H6L6, 2H56J (OP70). Tamamı Excel’de 4_SN_vs_CT sayfasında.
+Kontrol: Formda bu S/N kaç kez, kim tarafından işlenmiş. Kural: devirde toplam süre C/T’yi geçmemeli.
+
+3. Aynı tezgâhta iki kişi aynı saatlerde (yaklaşık 28 saat)
+
+AB-09, 03.10 07–15: Yaşar (4599–4602) / Ertuğrul (4589–4598)
+AB-09, 03.10 19–23: Nazif (4586–4588) / Muhammed (4573–4575)
+AB-07, 06.10 07–15: Aşkın (4807–4810) / Hüseyin Yılmaz (4800–4804)
+AB-11, 01.10 19–23: Mehmet Emre (4262–4264) / Muhammed (4270–4274)
+AB-10, 06.10 19–23: Özcan (4826–4827) / Yaşar (4828–4829)
+
+Farklı parçalar aynı anda tek tezgâhta işlenemez. Biri başka tezgâhta çalışıp yanlış tezgâh yazmış olabilir, o yüzden ikisine de “o saatte neredeydin?” diye sor.
+
+4. Süre gerçek ölçüm değil (veri güveni)
+
+Üretim satırlarının %50'sinde süre = C/T (263/526): Ertuğrul %73, Umut %70, Nazif %69. Tek başına kanıt değil (süreler 15 dk adımlı), ama bu oranda bir örüntü.
+Muhammed’in iki gecesi (4171–4176 ve 4573–4578) saat ve yemek değerleriyle birebir aynı, sadece S/N’ler farklı.
+İlker’in 01.10'daki 10 saatlik satırı (4363): yemek düşülmemiş, süre C/T’ye tam eşit.
+Sonuç: verimlilik ve OEE rakamları yaklaşık sayılmalı.
+
+5. Çok kısa sürede BİTTİ (süre eksik veya C/T hatalı, 11 kayıt)
+
+Hamza, 03.10 AB-08: 6 parça BİTTİ, C/T toplamı 13,5 saat ama net üretim 7,25 saat. 15-20-İÇ’te 5 parça ×1 saat girilmiş, C/T 2,25. Önce katalogdaki 2,25'in doğru olup olmadığını kontrol et.
+2H2R0 (M14P04 OP10, C/T 10): 4,5 saatte BİTTİ.
+Diğerleri: Yaşar 2H561 OP60 0,75/3,25 saat, Ali Öztekin 2FJMJ 1,25/2,0 saat.
+Ayrıca AB-07'de 01.10 07:00–13:00 arası hiç kayıt yok.
+
+Kalan küçük şeyler (S/N çelişkileri, yemek 0,3 ve 0,75 gibi garip değerler) Excel’de duruyor, şimdilik bakma.
