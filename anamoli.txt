@@ -13,6 +13,7 @@ Gece	Kişi / Tezgâh	Blok A (Giriş satırı)	Blok B	Çift saat
 Ne yapacaksın: O gecelerin formlarını çek. Her blokta kimin yazdığına, imzaya ve S/N’lerin üretim fişine bak.
 Karar: Farklı kişiyse isim/tezgâhı düzelt, aynı işin kopyasıysa B’yi sil. Ertuğrul’un 05→06 gecesi iki tezgâhı birden takip etmiş olabilir, ona sor.
 
+
 2. İki kez BİTTİ olan S/N’ler (12 S/N)
 
 2H561 (OP70): Ertuğrul 1,0 + Muhammed 1,0 = zaten tam C/T (2,0). Muhammed bir de 2,0 daha girmiş, toplam 4,0.
@@ -46,3 +47,7 @@ Diğerleri: Yaşar 2H561 OP60 0,75/3,25 saat, Ali Öztekin 2FJMJ 1,25/2,0 saat.
 Ayrıca AB-07'de 01.10 07:00–13:00 arası hiç kayıt yok.
 
 Kalan küçük şeyler (S/N çelişkileri, yemek 0,3 ve 0,75 gibi garip değerler) Excel’de duruyor, şimdilik bakma.
+
+
+
+nazif 3 ü  15 saat çalışıyo sabah7 11 çıkıyo

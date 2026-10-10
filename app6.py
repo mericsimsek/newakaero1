@@ -52,10 +52,11 @@ def _hm(dk):
     return "-" if pd.isna(dk) else f"{int(dk) % 1440 // 60:02d}:{int(dk) % 60:02d}"
 
 def _bas_zaman(tarih, vard, bas_dk):
-    """Excel'deki takvim gününe başlangıç saatini ekler. Vardiya ne olursa olsun gün eklemez."""
     if pd.isna(tarih) or pd.isna(bas_dk):
         return pd.NaT
     return pd.Timestamp(tarih).normalize() + pd.Timedelta(minutes=float(bas_dk))
+            
+
 
 def _bitti_maske(s: pd.Series) -> pd.Series:
     return (s.astype(str).str.replace("\u0307", "", regex=False).str.translate(_TR)
@@ -146,6 +147,36 @@ def _devir_metni(ben, onceki, sonraki) -> str:
     if al:
         return f"← {_ad_ek(onceki, 'den')} devraldı"
     return ""
+
+def _fiziksel_zaman(U: pd.DataFrame) -> pd.Series:
+    """S/N zinciri için gerçek zaman. Gece vardiyasının gece yarısı sonrası kayıtlarının
+    hangi takvim gününe ait olduğunu zincirdeki diğer kayıtlardan çıkarır. Sadece U içindeki
+    sıralama için kullanılır, ekranda görünen Tarih'i değiştirmez."""
+    vv = U["Vardiya"].map(_vardiya)
+    vb = vv.map(lambda t: t[0])
+    ve = vv.map(lambda t: t[1])
+    bas_dk = (U["_bas"] - U["Tarih"]).dt.total_seconds() / 60
+
+    gece = ve < vb                    # gece vardiyası
+    aksam = gece & (bas_dk >= vb)     # gece vardiyasının akşam kısmı (19:00-24:00)
+    sabah = gece & (bas_dk < vb)      # gece yarısından sonrası (00:00-07:00)
+    gun = ~gece
+
+    aksam_var = set(zip(U.loc[aksam, "_a"], U.loc[aksam, "Tarih"]))
+    gun_var = set(zip(U.loc[gun, "_a"], U.loc[gun, "Tarih"]))
+    bir_gun = pd.Timedelta(days=1)
+
+    def kayma(a, t, s):
+        if not s:
+            return 0
+        if (a, t) in aksam_var:                                  # aynı gün akşamı da var: aynı vardiya, sabah ertesi güne düşer
+            return 1
+        if (a, t + bir_gun) in gun_var and (a, t) not in gun_var:  # gündüz kaydı ancak ertesi gün var
+            return 1
+        return 0                                                 # varsayılan: yazılan tarih sabahın takvim günü
+
+    k = [kayma(a, t, s) for a, t, s in zip(U["_a"], U["Tarih"], sabah)]
+    return U["_bas"] + pd.Series(pd.to_timedelta(k, unit="D"), index=U.index)
 @st.cache_data(show_spinner="Veri hazırlanıyor…")
 def hazirla(veri: pd.DataFrame):
     x = veri.reset_index(drop=True)
@@ -197,7 +228,8 @@ def hazirla(veri: pd.DataFrame):
         # --- S/N zinciri: Adet (son satır) + İşlem Adımı (devir) ---
     U = T[(T["Durum"] == "Üretim") & T["S/N"].notna()].copy()
     U["_a"] = U["Parça"].fillna("-") + "|" + U["Op"].fillna("-") + "|" + U["S/N"]
-    U = U.sort_values(["_a", "_bas", "_bit_dk"], na_position="last")
+    U["_pz"] = _fiziksel_zaman(U)
+    U = U.sort_values(["_a", "_pz", "_bit_dk"], na_position="last")
     g = U.groupby("_a", sort=False)
 
     # KURAL 1: grupta BİTTİ varsa "1", grubun kronolojik EN SON satırına yazılır
@@ -212,6 +244,7 @@ def hazirla(veri: pd.DataFrame):
     U["İşlem Adımı"] = [_devir_metni(b, o, s) for b, o, s in zip(kisa, onceki, sonraki)]
 
     T["_a"] = U["_a"].reindex(T.index)
+    T["_pz"] = U["_pz"].reindex(T.index).fillna(T["_bas"])
     T["İşlem Adımı"] = U["İşlem Adımı"].reindex(T.index).fillna("")
     T["Adet"] = U["Adet"].reindex(T.index).fillna("")
     T["_adet"] = U["_adet"].reindex(T.index).fillna(0).astype(int)
@@ -269,7 +302,7 @@ s_uzun = d2.multiselect("🏷️ Uzun Referans", sorted(T["Uzun Ref"].replace("-
                         placeholder="Tümü", key="f_uzun")
 s_op = d3.multiselect("⚙️ Op", sorted(T["Op"].dropna().unique(), key=_op_sirala), placeholder="Tümü", key="f_op")
 s_ara = d4.text_input("🔎 Arama (S/N)", placeholder="Örn: 2H50M", key="f_ara")
-s_sira = d5.radio("Sırala", ["⏱ Tezgah ve Zaman", "🔗 S/N'ye Göre (Grupla)"], horizontal=True, key="f_sira")
+s_sira = d5.radio("Sırala", ["⏱ Tezgah ve Zaman", "👤 Operatör ve Zaman", "🔗 S/N'ye Göre (Grupla)"], horizontal=True, key="f_sira")
 
 
 x = G
@@ -283,10 +316,12 @@ if s_ara:
 
 if s_sira.startswith("⏱"):
     x = x.sort_values(["Tezgah", "_bas", "_bit_dk"], na_position="last")
+elif s_sira.startswith("👤"):
+    x = x.sort_values(["Operatör", "_bas", "_bit_dk"], na_position="last")
 else:
     anahtar = x["_a"].fillna(pd.Series("~" + x.index.astype(str), index=x.index))
-    x = (x.assign(_k=anahtar, _ilk=x.groupby(anahtar)["_bas"].transform("min"))
-         .sort_values(["_ilk", "_k", "_bas"], na_position="last"))
+    x = (x.assign(_k=anahtar, _ilk=x.groupby(anahtar)["_pz"].transform("min"))
+         .sort_values(["_ilk", "_k", "_pz"], na_position="last"))
 
 if x.empty:
     st.info("Seçili tarih ve filtrelerle eşleşen kayıt yok. Filtre seçimlerin korunuyor; tarihi ya da filtreleri değiştirebilirsin.")
