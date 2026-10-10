@@ -3,7 +3,7 @@
 4_AI_Asistan.py — AI Fabrika Asistanı.
 """
 from __future__ import annotations
-
+from uretim_akisi import hazirla
 import pandas as pd
 import streamlit as st
 
@@ -161,7 +161,53 @@ def _csv_kirp(d: pd.DataFrame, n: int) -> str:
         + d.tail(n).to_csv(index=False)
     )
 
+def _haftalik_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, hafta_sayisi: int = 6) -> str:
+    """app6 ile aynı hazirla() çıktısından, Perşembe–Çarşamba haftalarına göre özet tablolar."""
+    T, _ = hazirla(df_ham)
+    t = T.dropna(subset=["Tarih"]).copy()
+    if "TARİH" in df.columns and df["TARİH"].notna().any():            # AI sayfasındaki tarih filtresine uy
+        t = t[(t["Tarih"] >= df["TARİH"].min().normalize()) & (t["Tarih"] <= df["TARİH"].max().normalize())]
+    if t.empty:
+        return ""
 
+    iso = (t["Tarih"] - pd.Timedelta(days=3)).dt.isocalendar()           # Perşembe başlangıçlı hafta
+    t["Yıl"], t["Hafta"] = iso.year.astype(int), iso.week.astype(int)
+    t["Hafta_Başı_Perş"] = (t["Tarih"] - pd.to_timedelta((t["Tarih"].dt.weekday - 3) % 7, unit="D")).dt.date
+    son = t[["Yıl", "Hafta"]].drop_duplicates().sort_values(["Yıl", "Hafta"]).tail(hafta_sayisi)
+    t = t.merge(son, on=["Yıl", "Hafta"])
+    h = ["Yıl", "Hafta", "Hafta_Başı_Perş"]
+
+    # TABLO 10: Tezgah bazlı: tüm durum saatleri + biten adet
+    p = t.pivot_table(index=h + ["Tezgah"], columns="Durum", values="Süre", aggfunc="sum", fill_value=0).round(2)
+    p["Net_Adet"] = t.groupby(h + ["Tezgah"])["_adet"].sum()
+    t10 = p.reset_index()
+    t10.columns.name = None
+
+    # TABLO 11: Tezgah × Operatör (üretim saati + biten adet)
+    u = t[t["Durum"] == "Üretim"]
+    t11 = (u.groupby(h + ["Tezgah", "Operatör"]).agg(Uretim_sa=("Süre", "sum"), Islem_Gören_SN=("S/N", "nunique"))
+             .round(2).reset_index())
+    t11["Biten_Adet"] = t11.merge(
+        t.groupby(h + ["Tezgah", "Operatör"])["_adet"].sum().reset_index(),
+        on=h + ["Tezgah", "Operatör"], how="left")["_adet"].values
+
+    # TABLO 12: Parça × Op (üretim saati + biten adet)
+    t12 = (t.groupby(h + ["Parça", "Op"]).agg(Uretim_sa=("Süre", lambda s: s[t.loc[s.index, "Durum"] == "Üretim"].sum()),
+                                               Biten_Adet=("_adet", "sum")).round(2).reset_index())
+
+    # TABLO 13: Duruş / Set-up sebepleri
+    d = t[t["Durum"].isin(["Plansız_Duruş", "Set_Up", "Rework"]) & (t["Sebep"] != "")]
+    t13 = (d.groupby(h + ["Tezgah", "Durum", "Sebep"])["Süre"].sum().round(2).reset_index()
+             .rename(columns={"Süre": "Saat"}))
+
+    bas = ("Kullanıcı 'N. hafta' derse YALNIZCA Hafta=N satırlarını kullan; tarih aralığı hesaplama. "
+           "Hafta Perşembe–Çarşamba. Adet = BİTTİ alan S/N, parçanın bittiği haftada sayılır. ")
+    return (
+        "### TABLO 10: HAFTALIK TEZGAH ÖZETİ (saatler + Net_Adet)\n" + bas + "\n" + t10.to_csv(index=False) +
+        "\n### TABLO 11: HAFTALIK TEZGAH×OPERATÖR (üretim saati, işlem gören S/N, biten adet)\n" + t11.to_csv(index=False) +
+        "\n### TABLO 12: HAFTALIK PARÇA×OP (üretim saati, biten adet)\n" + t12.to_csv(index=False) +
+        "\n### TABLO 13: HAFTALIK DURUŞ/SET-UP/REWORK SEBEPLERİ (saat)\n" + t13.to_csv(index=False)
+    )
 # =============================================================================
 # BAĞLAM (CONTEXT) OLUŞTURMA
 # =============================================================================
@@ -200,9 +246,11 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
         kullanilan_metrikler.append("setup_ortalama")
 
     if "TARİH" in df.columns:
+        # 1. MEVCUT KODUN: Günlük mikro analizler için (Tablo 7)
         gunluk_ozet = df.groupby([df["TARİH"].dt.date, "TEZGAH", "Durum"])["Sure_Saat"].sum().reset_index()
         parcalar.append("### TABLO 7: GÜNLÜK TEZGAH-DURUM SÜRE ÖZETİ\n" + _csv_kirp(gunluk_ozet, TABLO7_MAX_SATIR))
-
+        
+        
     onerilen_ct = compute_onerilen_ct(df)
     if not onerilen_ct.empty:
         parcalar.append(
@@ -223,7 +271,12 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
         if "Sure_Saat" in kronolojik_veri.columns:
             kronolojik_veri["Sure_Dakika"] = (kronolojik_veri["Sure_Saat"] * 60).round(0)
         parcalar.append("### TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI (Satır Bazlı Döküm)\n" + _csv_kirp(kronolojik_veri, TABLO8_MAX_SATIR))
-
+    try:
+        _hb = _haftalik_baglam(df_ham, df)
+        if _hb:
+            parcalar.append(_hb)
+    except Exception as e:
+        st.sidebar.warning(f"Haftalık tablolar hazırlanamadı: {e}")
     return "\n\n".join(parcalar), sorted(set(kullanilan_metrikler))
 
 baglam, kullanilan_metrikler = _baglam_ve_kullanilan_metrikler(df)
@@ -254,7 +307,12 @@ KURALLAR:
 """
 _gunluk = st.session_state.get("gunluk_ai_baglami")
 if _gunluk:
-    baglam = baglam + "\n\n### GÜNLÜK AKIŞ SAYFASI ÖZETİ\n" + _gunluk
+    baglam += (
+        "\n\n### GÜNCEL TARİH ARALIĞI ÖZETİ (Günlük Üretim Akışı sayfasından)\n"
+        "Kullanıcı bir tarih, gün veya hafta sorarsa BU bölümü kullan. "
+        "TABLO 1 tüm dönemin toplamıdır, tarih aralığına göre hesaplanmamıştır. "
+        "Soruları cevaplarken her zaman bu güncel tabloyu baz al!\n" + _gunluk
+    )
 
     
 _tahmini_token = len(SISTEM_PROMPTU) // 3  # Türkçe CSV için kaba tahmin
