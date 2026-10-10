@@ -208,6 +208,45 @@ def _haftalik_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, hafta_sayisi: int =
         "\n### TABLO 12: HAFTALIK PARÇA×OP (üretim saati, biten adet)\n" + t12.to_csv(index=False) +
         "\n### TABLO 13: HAFTALIK DURUŞ/SET-UP/REWORK SEBEPLERİ (saat)\n" + t13.to_csv(index=False)
     )
+def _gunluk_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, gun_sayisi: int = 14) -> str:
+    """app6 ile aynı hazirla() çıktısından, TÜM parçaları kapsayan günlük özet tabloları."""
+    T, _ = hazirla(df_ham)
+    t = T.dropna(subset=["Tarih"]).copy()
+    if "TARİH" in df.columns and df["TARİH"].notna().any():
+        t = t[(t["Tarih"] >= df["TARİH"].min().normalize()) & (t["Tarih"] <= df["TARİH"].max().normalize())]
+    if t.empty:
+        return ""
+    t["Gün"] = t["Tarih"].dt.date
+    gunler = sorted(t["Gün"].unique())[-gun_sayisi:]
+    t = t[t["Gün"].isin(gunler)]
+    ur = t["Durum"] == "Üretim"
+
+    g1 = pd.DataFrame({
+        "Uretim_sa": t[ur].groupby("Gün")["Süre"].sum(),
+        "Plansiz_Durus_sa": t[t["Durum"] == "Plansız_Duruş"].groupby("Gün")["Süre"].sum(),
+        "SetUp_Rework_sa": t[t["Durum"].isin(["Set_Up", "Rework"])].groupby("Gün")["Süre"].sum(),
+        "Islem_Goren_SN": t.groupby("Gün")["_a"].nunique(),
+        "Biten_Adet": t.groupby("Gün")["_adet"].sum(),
+    }).fillna(0).round(2).reset_index()
+
+    p = t.pivot_table(index=["Gün", "Tezgah"], columns="Durum", values="Süre", aggfunc="sum", fill_value=0).round(2)
+    p["Biten_Adet"] = t.groupby(["Gün", "Tezgah"])["_adet"].sum()
+    g2 = p.reset_index()
+    g2.columns.name = None
+
+    b = t[(t["_adet"] == 1) & t["Gün"].isin(gunler[-7:])]
+    g3 = (b[["Gün", "Tezgah", "Parça", "Op", "S/N", "Operatör"]]
+          .rename(columns={"Operatör": "Bitiren_Operatör"}).sort_values(["Gün", "Tezgah"]))
+
+    kural = ("ADET KURALI: 'çıkan parça / biten adet / kaç parça' sorularında SADECE GÜN-1, GÜN-2, GÜN-3 "
+             "ve HAFTA tablolarını kullan; bunlar TÜM parçaları kapsar. S/N izleme tabloları (TABLO 10, 14 vb.) "
+             "yalnızca 2547M01G03 Op 60 içindir, fabrika toplamı için KULLANMA. "
+             "Bir S/N ancak GÜN-3 listesinde varsa tamamlanmıştır. ")
+    return (
+        "### GÜN-1: GÜNLÜK FABRİKA TOPLAMI (tüm parçalar, saat + Biten_Adet)\n" + kural + "\n" + g1.to_csv(index=False) +
+        "\n### GÜN-2: GÜNLÜK TEZGAH ÖZETİ (saat + Biten_Adet)\n" + g2.to_csv(index=False) +
+        "\n### GÜN-3: SON 7 GÜNDE BİTEN S/N LİSTESİ (hangi parça, kim bitirdi)\n" + g3.to_csv(index=False)
+    )
 # =============================================================================
 # BAĞLAM (CONTEXT) OLUŞTURMA
 # =============================================================================
@@ -272,11 +311,12 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
             kronolojik_veri["Sure_Dakika"] = (kronolojik_veri["Sure_Saat"] * 60).round(0)
         parcalar.append("### TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI (Satır Bazlı Döküm)\n" + _csv_kirp(kronolojik_veri, TABLO8_MAX_SATIR))
     try:
-        _hb = _haftalik_baglam(df_ham, df)
-        if _hb:
-            parcalar.append(_hb)
+        for _fn in (_gunluk_baglam, _haftalik_baglam):
+            _b = _fn(df_ham, df)
+            if _b:
+                parcalar.append(_b)
     except Exception as e:
-        st.sidebar.warning(f"Haftalık tablolar hazırlanamadı: {e}")
+        st.sidebar.warning(f"Günlük/haftalık tablolar hazırlanamadı: {e}")
     return "\n\n".join(parcalar), sorted(set(kullanilan_metrikler))
 
 baglam, kullanilan_metrikler = _baglam_ve_kullanilan_metrikler(df)
