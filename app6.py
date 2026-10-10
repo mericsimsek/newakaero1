@@ -77,10 +77,10 @@ if s_ara:
     s_ara_kck = s_ara.strip().lower()
     x = x[x["S/N"].fillna("").str.lower().str.contains(s_ara_kck, regex=False)]
 
-if s_sira.startswith("⏱"):
-    x = x.sort_values(["Tezgah", "_bas", "_bit_dk"], na_position="last")
-elif s_sira.startswith("👤"):
-    x = x.sort_values(["Operatör", "_bas", "_bit_dk"], na_position="last")
+if "Tezgah" in s_sira:
+    x = x.sort_values(["Tezgah", "_sira", "_bit_dk"], na_position="last")
+elif "Operatör" in s_sira:
+    x = x.sort_values(["Operatör", "_sira", "_bit_dk"], na_position="last")
 else:
     anahtar = x["_a"].fillna(pd.Series("~" + x.index.astype(str), index=x.index))
     x = (x.assign(_k=anahtar, _ilk=x.groupby(anahtar)["_pz"].transform("min"))

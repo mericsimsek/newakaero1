@@ -161,7 +161,7 @@ def _csv_kirp(d: pd.DataFrame, n: int) -> str:
         + d.tail(n).to_csv(index=False)
     )
 
-def _haftalik_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, hafta_sayisi: int = 6) -> str:
+def _haftalik_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, hafta_sayisi: int = 3) -> str:
     """app6 ile aynı hazirla() çıktısından, Perşembe–Çarşamba haftalarına göre özet tablolar."""
     T, _ = hazirla(df_ham)
     t = T.dropna(subset=["Tarih"]).copy()
@@ -177,37 +177,43 @@ def _haftalik_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, hafta_sayisi: int =
     t = t.merge(son, on=["Yıl", "Hafta"])
     h = ["Yıl", "Hafta", "Hafta_Başı_Perş"]
 
-    # TABLO 10: Tezgah bazlı: tüm durum saatleri + biten adet
+    # HAFTA-1: Tezgah bazlı: tüm durum saatleri + biten adet
     p = t.pivot_table(index=h + ["Tezgah"], columns="Durum", values="Süre", aggfunc="sum", fill_value=0).round(2)
     p["Net_Adet"] = t.groupby(h + ["Tezgah"])["_adet"].sum()
     t10 = p.reset_index()
     t10.columns.name = None
 
-    # TABLO 11: Tezgah × Operatör (üretim saati + biten adet)
-    u = t[t["Durum"] == "Üretim"]
-    t11 = (u.groupby(h + ["Tezgah", "Operatör"]).agg(Uretim_sa=("Süre", "sum"), Islem_Gören_SN=("S/N", "nunique"))
-             .round(2).reset_index())
-    t11["Biten_Adet"] = t11.merge(
-        t.groupby(h + ["Tezgah", "Operatör"])["_adet"].sum().reset_index(),
-        on=h + ["Tezgah", "Operatör"], how="left")["_adet"].values
+    # HAFTA-DETAY: Operatör × Tezgah × Parça × Op (her şey tek satırda, AI birleştirme yapmasın)
+    t["Parça"] = t["Parça"].fillna("-")
+    t["Op"] = t["Op"].fillna("-")
+    ad = {"Üretim": "Uretim_sa", "Plansız_Duruş": "Durus_sa", "Set_Up": "SetUp_sa", "Rework": "Rework_sa"}
+    keys = h + ["Operatör", "Tezgah", "Parça", "Op"]
+    dd = t.assign(_k=t["Durum"].map(ad)).dropna(subset=["_k"])
+    pv = dd.pivot_table(index=keys, columns="_k", values="Süre", aggfunc="sum", fill_value=0)
+    for c in ad.values():
+        if c not in pv.columns:
+            pv[c] = 0
+    pv["Biten_Adet"] = t.groupby(keys)["_adet"].sum()
+    pv["Islem_Goren_SN"] = t[t["S/N"].notna()].groupby(keys)["S/N"].nunique()
+    t14 = pv[list(ad.values()) + ["Biten_Adet", "Islem_Goren_SN"]].fillna(0).round(2).reset_index()
+    t14.columns.name = None
 
-    # TABLO 12: Parça × Op (üretim saati + biten adet)
-    t12 = (t.groupby(h + ["Parça", "Op"]).agg(Uretim_sa=("Süre", lambda s: s[t.loc[s.index, "Durum"] == "Üretim"].sum()),
-                                               Biten_Adet=("_adet", "sum")).round(2).reset_index())
-
-    # TABLO 13: Duruş / Set-up sebepleri
+    # HAFTA-4: Duruş / Set-up / Rework sebepleri
     d = t[t["Durum"].isin(["Plansız_Duruş", "Set_Up", "Rework"]) & (t["Sebep"] != "")]
     t13 = (d.groupby(h + ["Tezgah", "Durum", "Sebep"])["Süre"].sum().round(2).reset_index()
              .rename(columns={"Süre": "Saat"}))
 
     bas = ("Kullanıcı 'N. hafta' derse YALNIZCA Hafta=N satırlarını kullan; tarih aralığı hesaplama. "
-           "Hafta Perşembe–Çarşamba. Adet = BİTTİ alan S/N, parçanın bittiği haftada sayılır. ")
+           "Hafta Perşembe–Çarşamba. Adet = BİTTİ alan S/N, parçanın bittiği haftada sayılır.")
     return (
-        "### TABLO 10: HAFTALIK TEZGAH ÖZETİ (saatler + Net_Adet)\n" + bas + "\n" + t10.to_csv(index=False) +
-        "\n### TABLO 11: HAFTALIK TEZGAH×OPERATÖR (üretim saati, işlem gören S/N, biten adet)\n" + t11.to_csv(index=False) +
-        "\n### TABLO 12: HAFTALIK PARÇA×OP (üretim saati, biten adet)\n" + t12.to_csv(index=False) +
-        "\n### TABLO 13: HAFTALIK DURUŞ/SET-UP/REWORK SEBEPLERİ (saat)\n" + t13.to_csv(index=False)
+        "### HAFTA-1: TEZGAH TOPLAMLARI (saatler + Net_Adet). Toplam sorularında BUNU kullan.\n"
+        + bas + "\n" + t10.to_csv(index=False) +
+        "\n### HAFTA-DETAY: Operatör × Tezgah × Parça × Op (her satır tek bir kombinasyondur; "
+        "satırı olmayan kombinasyon YOKTUR)\n" + t14.to_csv(index=False) +
+        "\n### HAFTA-4: DURUŞ/SET-UP/REWORK SEBEPLERİ (saat)\n" + t13.to_csv(index=False)
     )
+
+
 def _gunluk_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, gun_sayisi: int = 14) -> str:
     """app6 ile aynı hazirla() çıktısından, TÜM parçaları kapsayan günlük özet tabloları."""
     T, _ = hazirla(df_ham)
@@ -237,6 +243,12 @@ def _gunluk_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, gun_sayisi: int = 14)
     b = t[(t["_adet"] == 1) & t["Gün"].isin(gunler[-7:])]
     g3 = (b[["Gün", "Tezgah", "Parça", "Op", "S/N", "Operatör"]]
           .rename(columns={"Operatör": "Bitiren_Operatör"}).sort_values(["Gün", "Tezgah"]))
+        # GÜN-4: Gün × Operatör × Tezgah: üretim saati + biten adet + biten S/N listesi
+    key4 = ["Gün", "Operatör", "Tezgah"]
+    g4 = t[ur].groupby(key4).agg(Uretim_sa=("Süre", "sum")).round(2)
+    g4["Biten_Adet"] = t.groupby(key4)["_adet"].sum()
+    g4["Biten_SN"] = t[t["_adet"] == 1].groupby(key4)["S/N"].apply(lambda s: ";".join(s.astype(str)))
+    g4 = g4.fillna({"Biten_Adet": 0, "Biten_SN": ""}).astype({"Biten_Adet": int}).reset_index()
 
     kural = ("ADET KURALI: 'çıkan parça / biten adet / kaç parça' sorularında SADECE GÜN-1, GÜN-2, GÜN-3 "
              "ve HAFTA tablolarını kullan; bunlar TÜM parçaları kapsar. S/N izleme tabloları (TABLO 10, 14 vb.) "
@@ -245,7 +257,9 @@ def _gunluk_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, gun_sayisi: int = 14)
     return (
         "### GÜN-1: GÜNLÜK FABRİKA TOPLAMI (tüm parçalar, saat + Biten_Adet)\n" + kural + "\n" + g1.to_csv(index=False) +
         "\n### GÜN-2: GÜNLÜK TEZGAH ÖZETİ (saat + Biten_Adet)\n" + g2.to_csv(index=False) +
-        "\n### GÜN-3: SON 7 GÜNDE BİTEN S/N LİSTESİ (hangi parça, kim bitirdi)\n" + g3.to_csv(index=False)
+        "\n### GÜN-3: SON 7 GÜNDE BİTEN S/N LİSTESİ (hangi parça, kim bitirdi)\n" + g3.to_csv(index=False)        + "\n### GÜN-4: GÜNLÜK OPERATÖR×TEZGAH (üretim saati, Biten_Adet, Biten_SN listesi). "
+          "Bir operatörün gün/aralık bazlı biten parça sorusunda BUNU kullan; o operatörün satırlarındaki Biten_Adet'i topla.\n"
+        + g4.to_csv(index=False)
     )
 # =============================================================================
 # BAĞLAM (CONTEXT) OLUŞTURMA
@@ -324,6 +338,14 @@ _sn_baglam = sn_ai_baglami(df)
 if _sn_baglam:
     baglam = baglam + "\n\n" + _sn_baglam
 
+_gunluk = st.session_state.get("gunluk_ai_baglami")
+if _gunluk:
+    baglam += (
+        "\n\n### GÜNCEL TARİH ARALIĞI ÖZETİ (Günlük Üretim Akışı sayfasından)\n"
+        "Kullanıcı bir tarih, gün veya hafta sorarsa BU bölümü kullan. "
+        "TABLO 1 tüm dönemin toplamıdır, tarih aralığına göre hesaplanmamıştır.\n" + _gunluk
+    )
+
 tablolar = tablolari_topla(df)
 formul_bloklari = "\n\n".join(metrik_aciklamasi(k) for k in kullanilan_metrikler)
 
@@ -336,7 +358,8 @@ KURALLAR:
 3. Bir duruşu raporlarken Operatör İsmi, Parça, Dakika (Sure_Dakika) ve Sebebini kesinlikle belirt.
 4. Kullanıcı "bunu nasıl hesapladın?", "neden türettin?" veya "hangi formülle buldun?" diye sorarsa, İLGİLİ METRİĞİN TAM FORMÜLÜNÜ VE MANTIĞINI METRİK SÖZLÜĞÜ'nden birebir alıntıla.
 5. Veride olmayan bir şeyi UYDURMA. Emin değilsen açıkça "bu veriyle hesaplanamıyor" de.
-
+6. Farklı tabloları kendi kafandan ÇAPRAZLAMA (ör. operatör tablosu ile parça tablosunu birleştirip tezgah çıkarma). Operatör+tezgah+parça sorularında SADECE HAFTA-DETAY'ı kullan; orada satırı olmayan kombinasyon veride YOKTUR. Toplam sorularında HAFTA-1 / GÜN-1 satırlarını kullan; kendin topladıysan hangi satırları topladığını yaz.
+7. Bir operatörün gün/tarih aralığında kaç parça bitirdiği sorulursa SADECE GÜN-4'ü kullan: o operatörün Biten_Adet'lerini topla, Biten_SN'leri tek tek say ve listele. TABLO 3 duruş paretosudur, S/N kaynağı DEĞİLDİR; S/N için asla TABLO 3 gösterme.
 {SN_AI_KURALI}
 
 --- METRİK SÖZLÜĞÜ (bu sohbette kullanılan tablolarla ilgili formüller) ---
@@ -345,16 +368,10 @@ KURALLAR:
 --- VERİ TABLOLARI (CSV) ---
 {baglam}
 """
-_gunluk = st.session_state.get("gunluk_ai_baglami")
-if _gunluk:
-    baglam += (
-        "\n\n### GÜNCEL TARİH ARALIĞI ÖZETİ (Günlük Üretim Akışı sayfasından)\n"
-        "Kullanıcı bir tarih, gün veya hafta sorarsa BU bölümü kullan. "
-        "TABLO 1 tüm dönemin toplamıdır, tarih aralığına göre hesaplanmamıştır. "
-        "Soruları cevaplarken her zaman bu güncel tabloyu baz al!\n" + _gunluk
-    )
+with st.sidebar.expander("🔬 AI'a giden bağlam (debug)"):
+    st.write(re.findall(r"^### .*", SISTEM_PROMPTU, flags=re.M))
+    st.download_button("Bağlamı indir (.txt)", SISTEM_PROMPTU, "baglam.txt")
 
-    
 _tahmini_token = len(SISTEM_PROMPTU) // 3  # Türkçe CSV için kaba tahmin
 st.sidebar.caption(f"Tahmini bağlam: ~{_tahmini_token:,} token")
 if _tahmini_token > 8000:
@@ -453,7 +470,9 @@ st.markdown("---")
 # =============================================================================
 for _i, mesaj in enumerate(st.session_state.sohbet_gecmisi):
     with st.chat_message(mesaj["role"]):
-        st.markdown(mesaj["content"])
+        st.markdown(mesaj.get("gorunen", mesaj["content"]))
+        if mesaj.get("hesap"):
+            st.info(mesaj["hesap"])
         if mesaj["role"] == "assistant":
             _teyit_alani(_i)
 
@@ -463,7 +482,66 @@ for _i, mesaj in enumerate(st.session_state.sohbet_gecmisi):
 soru = st.chat_input("Sorunu manuel yaz veya yukarıdan bir analiz seç...")
 if secilen_soru:
     soru = secilen_soru
+_TRM = str.maketrans("İıŞşĞğÜüÖöÇç", "IiSsGgUuOoCc")
+_AYLAR = {"ocak": 1, "subat": 2, "mart": 3, "nisan": 4, "mayis": 5, "haziran": 6, "temmuz": 7,
+          "agustos": 8, "eylul": 9, "ekim": 10, "kasim": 11, "aralik": 12}
 
+def _norm(s: str) -> str:
+    return str(s).translate(_TRM).lower()
+
+def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
+    """Soruda operatör + tarih/hafta varsa toplamları Python hesaplar (AI toplamasın)."""
+    t = T.dropna(subset=["Tarih"]).copy()
+    if t.empty:
+        return ""
+    q = _norm(soru)
+    kisiler = [k for k in t["Operatör"].dropna().unique() if k != "-" and _norm(k) in q]
+    if not kisiler:
+        return ""
+    yil = int(t["Tarih"].max().year)
+    ay = "(" + "|".join(_AYLAR) + ")"
+    yilp = r"(?:\s*(20\d\d))?"
+    d1 = d2 = None
+    etiket = ""
+    tok = r"(?<!\d)\d{1,2}(?!\d)"
+    pat = r"((?:" + tok + r"\s*(?:-|–|,|ile|ila|ve)?\s*)+)" + ay + yilp
+    gunler = []
+    for m in re.finditer(pat, q):
+        y = int(m[3]) if m[3] else yil
+        gunler += [pd.Timestamp(y, _AYLAR[m[2]], int(n)) for n in re.findall(tok, m[1])]
+    d1 = d2 = None
+    if gunler:
+        d1, d2 = min(gunler), max(gunler)
+    if d1 is None:
+        mh = re.search(r"(?<!\d)(\d{1,2})(?!\d)\s*\.?\s*hafta", q)
+        if not mh:
+            return ""
+        hno = int(mh[1])
+        iso = (t["Tarih"] - pd.Timedelta(days=3)).dt.isocalendar()
+        t = t[iso.week.astype(int) == hno]
+        if t.empty:
+            return ""
+        d1, d2 = t["Tarih"].min(), t["Tarih"].max()
+        etiket = f"{hno}. hafta (Perşembe–Çarşamba)"
+    t = t[(t["Tarih"] >= d1) & (t["Tarih"] <= d2)]
+    etiket = etiket or f"{d1:%d.%m.%Y} – {d2:%d.%m.%Y}"
+
+    satirlar = [f"HESAPLANMIŞ SONUÇ (Python, kesin; AI bu rakamları aynen kullanmalı, kendi toplamasın) — {etiket}"]
+    for kisi in kisiler:
+        k = t[t["Operatör"] == kisi]
+        if k.empty:
+            satirlar.append(f"{kisi}: bu aralıkta kayıt yok.")
+            continue
+        s = lambda d: k.loc[k["Durum"] == d, "Süre"].sum()
+        bit = k[k["_adet"] == 1]
+        satirlar.append(
+            f"{kisi}: Üretim {s('Üretim'):.2f} sa | Plansız duruş {s('Plansız_Duruş'):.2f} sa | "
+            f"Set-up {s('Set_Up'):.2f} sa | Rework {s('Rework'):.2f} sa | Toplam {k['Süre'].sum():.2f} sa | "
+            f"Biten parça: {len(bit)} adet")
+        for gun, g in bit.groupby(bit["Tarih"].dt.date):
+            satirlar.append(f"  {gun:%d.%m.%Y}: {len(g)} adet — " + ", ".join(
+                f"{sn} ({tz}, {p} Op {o})" for sn, tz, p, o in zip(g["S/N"], g["Tezgah"], g["Parça"], g["Op"])))
+    return "\n".join(satirlar)
 def _groq_cagri() -> str:
     mesajlar = [{"role": "system", "content": SISTEM_PROMPTU}]
     mesajlar += st.session_state.sohbet_gecmisi[-7:]  # son birkaç mesaj yeter
@@ -472,17 +550,30 @@ def _groq_cagri() -> str:
     )
     return yanit.choices[0].message.content or ""
 
+SISTEM_KISA = (
+    "Sen fabrika üretim asistanısın. Kullanıcı mesajındaki 'HESAPLANMIŞ SONUÇ' Python ile hesaplanmış "
+    "kesin sonuçtur. Cevabını SADECE bu sonuca dayandır: rakamları aynen kullan, toplama/çıkarma yapma, "
+    "başka tablo veya kaynak (TABLO 2, TABLO 21, GÜN-4, HAFTA vb.) ekleme, sonuçta olmayan bilgiyi uydurma. "
+    "Türkçe, kısa ve düzenli özetle. Sonuçta olmayan bir şey sorulursa 'bu hesapta yok' de."
+)
+
+def _hesapli_mi() -> bool:
+    g = st.session_state.sohbet_gecmisi
+    return bool(g and g[-1].get("hesap"))
 
 def _gemini_cagri(soru_metni: str) -> str:
-    model = genai.GenerativeModel(model_name=gemini_model_adi, system_instruction=SISTEM_PROMPTU)
-    gecmis = [
+    hesapli = _hesapli_mi()
+    model = genai.GenerativeModel(
+        model_name=gemini_model_adi,
+        system_instruction=SISTEM_KISA if hesapli else SISTEM_PROMPTU,
+    )
+    gecmis = [] if hesapli else [
         {"role": "user" if m["role"] == "user" else "model", "parts": [m["content"]]}
         for m in st.session_state.sohbet_gecmisi[-7:-1]
     ]
     while gecmis and gecmis[0]["role"] != "user":  # Gemini geçmişi 'user' ile başlamalı
         gecmis.pop(0)
     return model.start_chat(history=gecmis).send_message(soru_metni).text
-
 
 def _cevap_uret(soru_metni: str) -> tuple[str, str]:
     if saglayici == "Sadece Gemini":
@@ -504,14 +595,22 @@ def _cevap_uret(soru_metni: str) -> tuple[str, str]:
 
 
 if soru:
-    st.session_state.sohbet_gecmisi.append({"role": "user", "content": soru})
+    try:
+        hesap = _soru_hesabi(soru, hazirla(df_ham)[0])
+    except Exception:
+        hesap = ""
+    st.session_state.sohbet_gecmisi.append(
+        {"role": "user", "content": soru + ("\n\n" + hesap if hesap else ""), "gorunen": soru, "hesap": hesap})
     with st.chat_message("user"):
         st.markdown(soru)
+        if hesap:
+            st.info(hesap)
+        
 
-    try:
+    try:    
         with st.chat_message("assistant"):
             with st.spinner("Veriler ve formüller analiz ediliyor..."):
-                cevap, kullanilan = _cevap_uret(soru)
+                cevap, kullanilan = _cevap_uret(st.session_state.sohbet_gecmisi[-1]["content"])
                 # Bazı modeller (ör. qwen3) <think>...</think> bloğu döndürebilir
                 cevap = re.sub(r"<think>.*?</think>", "", cevap, flags=re.DOTALL).strip()
                 st.markdown(cevap)

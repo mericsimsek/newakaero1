@@ -220,7 +220,10 @@ def hazirla(veri: pd.DataFrame):
         "Süre": pd.to_numeric(x["Sure_Saat"], errors="coerce").fillna(0.0),
         "_bitti": _bitti_maske(x[c_bitti]).tolist() if c_bitti else [False] * n,
     })
-    
+    _vb = pd.Series([_vardiya(v)[0] for v in vard], index=T.index)      # vardiya başlangıcı (dk)
+    _bd = pd.Series(bas, index=T.index, dtype=float)                    # kaydın başlangıcı (dk)
+    _ofs = (_bd - _vb) % 1440                                           # vardiya başlangıcından geçen dk
+    T["_sira"] = (T["Tarih"] + pd.to_timedelta(_vb + _ofs, unit="m")).where(_vb.notna() & _bd.notna(), T["_bas"])
     def format_durum(d, s):
         d_clean = str(d).replace("_", " ")
         if d_clean in ["Plansız Duruş", "Set Up"] and s:
@@ -232,7 +235,7 @@ def hazirla(veri: pd.DataFrame):
         # --- S/N zinciri: Adet (son satır) + İşlem Adımı (devir) ---
     U = T[(T["Durum"] == "Üretim") & T["S/N"].notna()].copy()
     U["_a"] = U["Parça"].fillna("-") + "|" + U["Op"].fillna("-") + "|" + U["S/N"]
-    U["_pz"] = _fiziksel_zaman(U)
+    U["_pz"] = U["_sira"]
     U = U.sort_values(["_a", "_pz", "_bit_dk"], na_position="last")
     g = U.groupby("_a", sort=False)
 
