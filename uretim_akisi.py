@@ -69,14 +69,19 @@ def _bitti_kolonu(x: pd.DataFrame):
 
 def _op_sirala(v):
     return (not v.isdigit(), int(v) if v.isdigit() else 0, v)
-
 def sn_sayilari(d: pd.DataFrame) -> tuple[int, int]:
-    """(İşlem gören eşsiz S/N, tamamlanan (BİTTİ) eşsiz S/N). Anahtar: Parça + S/N."""
+    """(işlem gören, biten) FARKLI FİZİKSEL parça sayısı (Parça + S/N).
+    Aynı parça Op 10 ve Op 20'den geçse de bir kez sayılır."""
     s = d[(d["Durum"] == "Üretim") & d["S/N"].notna()]
     if s.empty:
         return 0, 0
-    anahtar = s["Parça"].fillna("-") + "|" + s["Op"].fillna("-") + "|" + s["S/N"]
-    return int(anahtar.nunique()), int(anahtar[s["_bitti"]].nunique())
+    anahtar = s["Parça"].fillna("-") + "|" + s["S/N"]
+    return int(anahtar.nunique()), int(anahtar[s["_adet"] == 1].nunique())
+
+
+def biten_operasyon(d: pd.DataFrame) -> int:
+    """Biten operasyon çıktısı: her (Parça, Op, S/N) için 1. Op 10 ve Op 20 ayrı sayılır."""
+    return int(d["_adet"].sum())
 
 def gunluk_ai_baglami_olustur(df_tablo: pd.DataFrame, secili_tarih) -> str:
     """Ekrandaki filtrelenmiş tabloyu AI için kısa bir metne çevirir. Sadece str döndürür."""
@@ -98,7 +103,8 @@ def gunluk_ai_baglami_olustur(df_tablo: pd.DataFrame, secili_tarih) -> str:
     satirlar = [
         f"Tarih: {tarih_txt} | Listelenen satır: {len(df_tablo)}",
         f"Üretim: {uretim:.1f} sa | Duruş: {durus:.1f} sa | Set-up+Rework: {setup_rw:.1f} sa",
-        f"İşlem gören eşsiz S/N: {sn_islem} | Tamamlanan (BİTTİ) S/N: {sn_biten}",
+        f"İşlem gören farklı parça (S/N): {sn_islem} | Biten farklı parça (S/N): {sn_biten} | "
+        f"Biten operasyon çıktısı: {int(df_tablo['_adet'].sum())}",
     ]
 
     d = df_tablo[durus_m]

@@ -11,8 +11,8 @@ import pandas as pd
 import streamlit as st
 
 from common import veri_yukle_ve_filtrele
+from uretim_akisi import hazirla, sn_sayilari, biten_operasyon, gunluk_ai_baglami_olustur, op_ad, _op_sirala, CALISMA
 
-from uretim_akisi import hazirla, sn_sayilari, gunluk_ai_baglami_olustur, op_ad, _op_sirala, CALISMA
 st.set_page_config(page_title="Günlük Üretim Akışı", layout="wide", page_icon="🏭")
 st.markdown("<style>[data-testid='stMetricValue']{font-size:2.4rem;font-weight:700}</style>", unsafe_allow_html=True)
 st.title("🏭 Günlük Üretim Akışı")
@@ -43,13 +43,16 @@ calisma = G[G["Durum"].isin(CALISMA)]
 st.markdown("### 🏢 Fabrika Genel Durumu (Seçili Tarih)")
 sn_islem, sn_biten = sn_sayilari(G)
 
-k1, k2, k3, k4, k5 = st.columns(5)
+k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("👷 Toplam Çalışan", calisma["Operatör"].nunique())
 k2.metric("🏭 Aktif Tezgah", calisma["Tezgah"].nunique())
-k3.metric("⏱️ Toplam Kayıtlı Süre", f"{G['Süre'].sum():,.1f} sa")
-k4.metric("📦 İşlem Gören S/N", sn_islem, help="Seçili tarihte en az bir üretim kaydı olan eşsiz S/N sayısı.")
-k5.metric("✅ Tamamlanan (BİTTİ)", sn_biten if c_bitti else "—",
-          help="Seçili tarihte 'BİTTİ' işareti alan eşsiz S/N sayısı.")
+k3.metric("⏱️ Kayıtlı Süre", f"{G['Süre'].sum():,.1f} sa")
+k4.metric("📦 İşlem Gören Parça", sn_islem,
+          help="Seçili tarihte üretim kaydı olan FARKLI S/N sayısı. Op 10 ve Op 20'den geçen parça bir kez sayılır.")
+k5.metric("✅ Biten Parça", sn_biten if c_bitti else "—",
+          help="BİTTİ alan FARKLI S/N sayısı (fiziksel parça).")
+k6.metric("🔧 Biten Operasyon", biten_operasyon(G) if c_bitti else "—",
+          help="Her operasyon bitişi ayrı sayılır (tablodaki Adet sütunu toplamı). Aynı parça Op 10 ve Op 20'de bitince 2 olur.")
 st.markdown("---")
 
 st.markdown("### 🔍 Detaylı İnceleme ve Filtreler")
@@ -97,11 +100,12 @@ if not x.empty and (s_tez or s_kisi or s_durum or s_parca or s_uzun):
     o_setup = x[x["Durum"] == "Set_Up"]["Süre"].sum()
     o_rework = x[x["Durum"] == "Rework"]["Süre"].sum()
     
-    oz1, oz2, oz3, oz4 = st.columns(4)
+    oz1, oz2, oz3, oz4, oz5 = st.columns(5)
     oz1.metric("⚙️ Net Üretim", f"{o_uretim:,.2f} sa")
     oz2.metric("🛑 Plansız Duruş", f"{o_durus:,.2f} sa")
     oz3.metric("🔧 Set-up & Rework", f"{(o_setup + o_rework):,.2f} sa")
-    oz4.metric("📦 Çıkan Net Adet", int(x["_adet"].sum()) if c_bitti else "—")
+    oz4.metric("✅ Biten Parça", sn_sayilari(x)[1] if c_bitti else "—")
+    oz5.metric("🔧 Biten Operasyon", biten_operasyon(x) if c_bitti else "—")
 
 gos = x[["Tarih", "Vardiya", "Saat", "Tezgah", "Operatör", "Parça – Op", "Uzun Ref", "S/N", 
          "İşlem Adımı", "Süre", "Adet", "Durum / Sebep"]].copy()

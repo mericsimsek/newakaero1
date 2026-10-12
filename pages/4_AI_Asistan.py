@@ -538,11 +538,15 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
         f = t[t["Tezgah"].isin(tz_l)] if tz_l else t
         if f.empty:
             return f"HESAPLANMIŞ SONUÇ — {etiket}: kayıt yok."
-
+        def _fiz(d):
+            b = d[d["_adet"] == 1]
+            return (b["Parça"].fillna("-") + "|" + b["S/N"].astype(str)).nunique()
         def _ozet(d):
             sm = lambda x: d.loc[d["Durum"] == x, "Süre"].sum()
             return (f"Üretim {sm('Üretim'):.2f} sa | Plansız duruş {sm('Plansız_Duruş'):.2f} sa | "
-                    f"Set-up {sm('Set_Up'):.2f} sa | Rework {sm('Rework'):.2f} sa | Biten parça: {int(d['_adet'].sum())} adet")
+                    f"Set-up {sm('Set_Up'):.2f} sa | Rework {sm('Rework'):.2f} sa | "
+                    f"Biten operasyon çıktısı: {int(d['_adet'].sum())} adet | "
+                    f"Farklı fiziksel S/N (bitmiş): {_fiz(d)}")
 
         satirlar = [f"HESAPLANMIŞ SONUÇ (Python, kesin; AI bu rakamları aynen kullanmalı, kendi toplamasın) — {etiket}",
                     ("SEÇİLİ TEZGAHLAR TOPLAMI: " if tz_l else "FABRİKA TOPLAMI: ") + _ozet(f), "TEZGAH BAZLI:"]
@@ -579,7 +583,8 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
         satirlar.append(
             f"{kisi}: Üretim {s('Üretim'):.2f} sa | Plansız duruş {s('Plansız_Duruş'):.2f} sa | "
             f"Set-up {s('Set_Up'):.2f} sa | Rework {s('Rework'):.2f} sa | Toplam {k['Süre'].sum():.2f} sa | "
-            f"Biten parça: {len(bit)} adet")
+            f"Biten operasyon çıktısı: {len(bit)} adet | "
+            f"Farklı fiziksel S/N (bitmiş): {(bit['Parça'].fillna('-') + '|' + bit['S/N'].astype(str)).nunique()}")
         for gun, g in bit.groupby(bit["Tarih"].dt.date):
             satirlar.append(f"  {gun:%d.%m.%Y}: {len(g)} adet — " + ", ".join(
                 f"{sn} ({tz}, {p} Op {o})" for sn, tz, p, o in zip(g["S/N"], g["Tezgah"], g["Parça"], g["Op"])))
@@ -599,6 +604,7 @@ SISTEM_KISA = (
     "Sonuçta S/N listesi varsa HER parça+operasyon için TÜM S/N'leri eksiksiz yaz, hiçbirini atlama veya "
     "'vb.' deme; en sonda toplam S/N sayısını yaz. Türkçe ve düzenli yaz. "
     "Sonuçta olmayan bir şey sorulursa 'bu hesapta yok' de."
+    "Kutuda 'Biten operasyon çıktısı' ve 'Farklı fiziksel S/N' iki ayrı sayı varsa ikisini de yaz ve farkını kısaca açıkla (aynı parça birden fazla operasyondan geçer). "
 )
 
 def _hesapli_mi() -> bool:
