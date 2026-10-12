@@ -497,7 +497,9 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
     q = _norm(soru)
     kisiler = [k for k in t["Operatör"].dropna().unique() if k != "-" and _norm(k) in q]
     if not kisiler:
-        return ""
+        if re.search(r"neden|sebep|nicin|niye", q) or not re.search(
+                r"toplam|kac|ne kadar|ozet|fabrika|tezgah|adet|parca|sure|saat|durus|uretim", q):
+            return ""
     yil = int(t["Tarih"].max().year)
     ay = "(" + "|".join(_AYLAR) + ")"
     yilp = r"(?:\s*(20\d\d))?"
@@ -525,6 +527,24 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
         etiket = f"{hno}. hafta (Perşembe–Çarşamba)"
     t = t[(t["Tarih"] >= d1) & (t["Tarih"] <= d2)]
     etiket = etiket or f"{d1:%d.%m.%Y} – {d2:%d.%m.%Y}"
+    
+    if not kisiler:
+        tz_l = sorted({f"AB-{int(n):02d}" for n in re.findall(r"\bab\s*-?\s*(\d{1,2})\b", q)})
+        tz_l = [z for z in tz_l if z in set(t["Tezgah"])]
+        f = t[t["Tezgah"].isin(tz_l)] if tz_l else t
+        if f.empty:
+            return f"HESAPLANMIŞ SONUÇ — {etiket}: kayıt yok."
+
+        def _ozet(d):
+            sm = lambda x: d.loc[d["Durum"] == x, "Süre"].sum()
+            return (f"Üretim {sm('Üretim'):.2f} sa | Plansız duruş {sm('Plansız_Duruş'):.2f} sa | "
+                    f"Set-up {sm('Set_Up'):.2f} sa | Rework {sm('Rework'):.2f} sa | Biten parça: {int(d['_adet'].sum())} adet")
+
+        satirlar = [f"HESAPLANMIŞ SONUÇ (Python, kesin; AI bu rakamları aynen kullanmalı, kendi toplamasın) — {etiket}",
+                    ("SEÇİLİ TEZGAHLAR TOPLAMI: " if tz_l else "FABRİKA TOPLAMI: ") + _ozet(f), "TEZGAH BAZLI:"]
+        for tz, d in f.groupby("Tezgah"):
+            satirlar.append(f"  {tz}: " + _ozet(d))
+        return "\n".join(satirlar)
 
     satirlar = [f"HESAPLANMIŞ SONUÇ (Python, kesin; AI bu rakamları aynen kullanmalı, kendi toplamasın) — {etiket}"]
     for kisi in kisiler:
