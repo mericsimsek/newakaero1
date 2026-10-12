@@ -34,9 +34,12 @@ st.caption(
 
 df_ham, df, kaynak_notu = veri_yukle_ve_filtrele("asistan")
 st.caption(kaynak_notu)
-
+import datetime as _dt
+_bas_tarih = st.sidebar.date_input("📅 Başlangıç tarihi (öncesi bağlama girmez)", value=_dt.date(2026, 10, 1),
+                                   format="DD.MM.YYYY", key="ai_baslangic")
+df = df[df["TARİH"] >= pd.Timestamp(_bas_tarih)]
 if df.empty:
-    st.warning("Seçili filtrelerle eşleşen veri yok.")
+    st.warning("Seçilen başlangıç tarihinden sonra veri yok.")
     st.stop()
 
 if "Operator_Kod" in df.columns:
@@ -118,7 +121,7 @@ GEMINI_VAR = bool(genai and GEMINI_API_KEY)
 if GEMINI_VAR:
     genai.configure(api_key=GEMINI_API_KEY)
 
-GEMINI_TERCIH = ["gemini-2.5-flash-lite", "gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-flash-latest"]
+GEMINI_TERCIH = ["gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-latest"]
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -137,6 +140,7 @@ if GEMINI_VAR:
     saglayici = st.sidebar.radio(
         "AI sağlayıcı",
         ["Otomatik (büyük bağlamda Gemini, olmazsa Groq)", "Sadece Groq", "Sadece Gemini"],
+        index=2,
     )
     gemini_model_adi = st.sidebar.selectbox("Gemini Modeli", gemini_modelleri_getir(), index=0)
 else:
@@ -144,8 +148,8 @@ else:
     st.sidebar.caption("Gemini yedeği kapalı (GEMINI_API_KEY veya google-generativeai yok).")
 
 st.sidebar.markdown("**Bağlam boyutu** (ücretsiz plandaki dakikalık token sınırı için)")
-TABLO7_MAX_SATIR = st.sidebar.number_input("TABLO 7 en fazla satır", 0, 2000, 100, step=50)
-TABLO8_MAX_SATIR = st.sidebar.number_input("TABLO 8 en fazla satır", 0, 2000, 120, step=20)
+TABLO7_MAX_SATIR = st.sidebar.number_input("TABLO 7 en fazla satır", 0, 2000, 50, step=50)
+TABLO8_MAX_SATIR = st.sidebar.number_input("TABLO 8 en fazla satır", 0, 2000, 80, step=20)
 
 
 def _csv_kirp(d: pd.DataFrame, n: int) -> str:
@@ -542,8 +546,26 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
 
         satirlar = [f"HESAPLANMIŞ SONUÇ (Python, kesin; AI bu rakamları aynen kullanmalı, kendi toplamasın) — {etiket}",
                     ("SEÇİLİ TEZGAHLAR TOPLAMI: " if tz_l else "FABRİKA TOPLAMI: ") + _ozet(f), "TEZGAH BAZLI:"]
-        for tz, d in f.groupby("Tezgah"):
-            satirlar.append(f"  {tz}: " + _ozet(d))
+        if tz_l or "hangi" in q or re.search(r"\bsn|s/n|seri|parca", q):
+            u = f[f["Durum"] == "Üretim"].assign(Parça=lambda d: d["Parça"].fillna("-"), Op=lambda d: d["Op"].fillna("-"))
+            sn_iste = u["S/N"].nunique() <= 250   # çok büyük aralıkta sadece sayılar (bağlam şişmesin)
+            satirlar.append("PARÇA BAZLI (yalnızca üretim kayıtları; tezgah | parça Op: üretim saati, biten adet, operatörler"
+                            + ("; S/N listeleri" if sn_iste else "") + "):")
+            parca_satir = []
+            for (tz, p, o), d in u.groupby(["Tezgah", "Parça", "Op"]):
+                ops = ", ".join(sorted({a.split()[0] for a in d["Operatör"] if a != "-"}))
+                tum = sorted(d["S/N"].dropna().astype(str).unique())
+                bit = sorted(d.loc[d["_adet"] == 1, "S/N"].dropna().astype(str).unique())
+                satir = (f"  {tz} | {p} Op {o}: üretim {d['Süre'].sum():.2f} sa, biten {int(d['_adet'].sum())} adet, "
+                         f"işlem gören S/N: {len(tum)}, operatör: {ops}")
+                if sn_iste:
+                    bitmeyen = [x for x in tum if x not in bit]
+                    satir += f"\n      biten S/N: {', '.join(bit) or '-'}"
+                    if bitmeyen:
+                        satir += f"\n      işlenen ama bu aralıkta bitmeyen S/N: {', '.join(bitmeyen)}"
+                parca_satir.append((d["Süre"].sum(), satir))
+            parca_satir.sort(key=lambda x: -x[0])
+            satirlar += [x[1] for x in parca_satir[:80]]
         return "\n".join(satirlar)
 
     satirlar = [f"HESAPLANMIŞ SONUÇ (Python, kesin; AI bu rakamları aynen kullanmalı, kendi toplamasın) — {etiket}"]
@@ -574,7 +596,9 @@ SISTEM_KISA = (
     "Sen fabrika üretim asistanısın. Kullanıcı mesajındaki 'HESAPLANMIŞ SONUÇ' Python ile hesaplanmış "
     "kesin sonuçtur. Cevabını SADECE bu sonuca dayandır: rakamları aynen kullan, toplama/çıkarma yapma, "
     "başka tablo veya kaynak (TABLO 2, TABLO 21, GÜN-4, HAFTA vb.) ekleme, sonuçta olmayan bilgiyi uydurma. "
-    "Türkçe, kısa ve düzenli özetle. Sonuçta olmayan bir şey sorulursa 'bu hesapta yok' de."
+    "Sonuçta S/N listesi varsa HER parça+operasyon için TÜM S/N'leri eksiksiz yaz, hiçbirini atlama veya "
+    "'vb.' deme; en sonda toplam S/N sayısını yaz. Türkçe ve düzenli yaz. "
+    "Sonuçta olmayan bir şey sorulursa 'bu hesapta yok' de."
 )
 
 def _hesapli_mi() -> bool:
@@ -616,7 +640,13 @@ def _cevap_uret(soru_metni: str) -> tuple[str, str]:
 
 if soru:
     try:
-        hesap = _soru_hesabi(soru, hazirla(df_ham)[0])
+        _T = hazirla(df_ham)[0]
+        hesap = _soru_hesabi(soru, _T)
+        if not hesap:  # "hangi snler?" gibi takip soruları: önceki sorunun tarih/tezgah/operatörünü al
+            onc = [m.get("gorunen") for m in st.session_state.sohbet_gecmisi if m["role"] == "user" and m.get("hesap")]
+            if onc and len(soru.split()) <= 8 and re.search(
+                    r"\bsn|s/n|seri|parca|hangi|kim|kac|toplam|operator|tezgah|sure|saat|durus", _norm(soru)):
+                hesap = _soru_hesabi(onc[-1] + " " + soru, _T)
     except Exception:
         hesap = ""
     st.session_state.sohbet_gecmisi.append(
