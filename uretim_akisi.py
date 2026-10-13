@@ -247,6 +247,7 @@ def hazirla(veri: pd.DataFrame):
 
     # KURAL 1: grupta BİTTİ varsa "1", grubun kronolojik EN SON satırına yazılır
     son_satir = ~U.duplicated("_a", keep="last")
+    
     U["_adet"] = (g["_bitti"].transform("any") & son_satir).astype(int)
     U["Adet"] = np.where(U["_adet"] == 1, "1", "")
 

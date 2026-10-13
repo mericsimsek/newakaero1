@@ -21,6 +21,7 @@ df_ham, _df, kaynak_notu = veri_yukle_ve_filtrele("home")
 st.caption(kaynak_notu)
 
 T, c_bitti = hazirla(df_ham)
+
 if T.empty or T["Tarih"].notna().sum() == 0:
     st.warning("Gösterilecek tarih/veri bulunamadı.")
     st.stop()
@@ -42,6 +43,7 @@ if G.empty:
 calisma = G[G["Durum"].isin(CALISMA)]
 st.markdown("### 🏢 Fabrika Genel Durumu (Seçili Tarih)")
 sn_islem, sn_biten = sn_sayilari(G)
+
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("👷 Toplam Çalışan", calisma["Operatör"].nunique())
@@ -114,7 +116,7 @@ gos["Tarih"] = gos["Tarih"].dt.date
 gos["S/N"] = gos["S/N"].fillna("")
 gos = gos.rename(columns={"Süre": "Süre (sa)"})
 
-st.dataframe(gos, use_container_width=True, hide_index=True, height=650, column_config={
+st.dataframe(gos, use_container_width=True, hide_index=True, height=650,key=f"tablo_{s_sira}_{len(x)}", column_config={
     "Tarih": st.column_config.DateColumn(format="DD.MM.YYYY"),
     "Süre (sa)": st.column_config.NumberColumn(format="%.2f"),
 })
