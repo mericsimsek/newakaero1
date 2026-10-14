@@ -196,6 +196,10 @@ def hazirla(veri: pd.DataFrame):
     tarih = pd.to_datetime(x["TARİH"], errors="coerce").dt.normalize()
     vard = [_txt(v) for v in k("VARDİYA")]
     bas = [_dk(v) for v in k("BAŞLANGIÇ_SAAT")]
+
+
+
+
     bit = [_dk(v) for v in k("BİTİŞ_SAAT")]
     
     parca = [_txt(v) for v in k("PARÇA NO_ÜRETİM_GİRİLEN")]
@@ -239,21 +243,21 @@ def hazirla(veri: pd.DataFrame):
 
         # --- S/N Yolculuğu: sıralı devir zinciri ---
         # --- S/N zinciri: Adet (son satır) + İşlem Adımı (devir) ---
+    # --- S/N zinciri: TUR mantığı (BİTTİ turu kapatır) ---
     U = T[(T["Durum"] == "Üretim") & T["S/N"].notna()].copy()
     U["_a"] = U["Parça"].fillna("-") + "|" + U["Op"].fillna("-") + "|" + U["S/N"]
     U["_pz"] = U["_sira"]
     U = U.sort_values(["_a", "_pz", "_bit_dk"], na_position="last")
-    g = U.groupby("_a", sort=False)
 
-    # KURAL 1: grupta BİTTİ varsa "1", grubun kronolojik EN SON satırına yazılır
-    _b = U["_bitti"]
-    U["_adet"] = (_b & ~U["_a"].where(_b).duplicated(keep="last")).astype(int)
+    _once = U.groupby("_a", sort=False)["_bitti"].shift(1, fill_value=False).astype(int)
+    U["_ac"] = U["_a"] + "#" + _once.groupby(U["_a"]).cumsum().astype(str)   # tur anahtarı
+
+    U["_adet"] = U["_bitti"].astype(int)
     U["Adet"] = np.where(U["_adet"] == 1, "1", "")
 
-    # KURAL 2: satırın grup içindeki konumuna göre sadece o satırın devir bilgisi
-    kisa = U["Operatör"].map(lambda a: " ".join(a.split()[:2]) if a and a != "-" else "?")
-    onceki = kisa.groupby(U["_a"]).shift(1)
-    sonraki = kisa.groupby(U["_a"]).shift(-1)
+    kisa = U["Operatör"].map(lambda a: a.split()[0] if a and a != "-" else "?")
+    onceki = kisa.groupby(U["_ac"]).shift(1)
+    sonraki = kisa.groupby(U["_ac"]).shift(-1)
     U["İşlem Adımı"] = [_devir_metni(b, o, s) for b, o, s in zip(kisa, onceki, sonraki)]
 
     T["_a"] = U["_a"].reindex(T.index)
