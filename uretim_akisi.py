@@ -69,14 +69,66 @@ def _bitti_kolonu(x: pd.DataFrame):
 
 def _op_sirala(v):
     return (not v.isdigit(), int(v) if v.isdigit() else 0, v)
+FINAL_OP_HARITASI = {
+    "1865M14P04": "20",
+    "2243M35P03": "40",
+    "2302M91P03": "110",
+    "2383M85P03": "20",
+    "2445M92P01": "20",
+    "2466M52G04": "60",
+    "2547M01G03": "60",
+    "2547M40P02": "71",
+    "2564M13P02": "71",
+    "336-001-909-0": "20",
+    "4013760-004P01": "20",
+    "T160005": "20",
+    "T160007": "20",
+    "T160030": "20",
+    "T160032": "20",
+    "T170045": "20",
+    "T170046": "20",
+}
+
+def _nihai_biten_maske(s: pd.DataFrame) -> pd.Series:
+    """Son (FİNİSH) operasyonu BİTTİ olan satırlar. Uzun Ref haritada yoksa eski mantık (her BİTTİ)."""
+    final_op = s["Uzun Ref"].astype(str).str.strip().map(FINAL_OP_HARITASI)
+    op = s["Op"].fillna("").astype(str).str.strip()
+    return (s["_adet"] == 1) & (final_op.isna() | (op == final_op))
+
+
 def sn_sayilari(d: pd.DataFrame) -> tuple[int, int]:
-    """(işlem gören, biten) FARKLI FİZİKSEL parça sayısı (Parça + S/N).
-    Aynı parça Op 10 ve Op 20'den geçse de bir kez sayılır."""
+    """(işlem gören, biten NİHAİ MAMUL) farklı fiziksel parça (Parça + S/N)."""
     s = d[(d["Durum"] == "Üretim") & d["S/N"].notna()]
     if s.empty:
         return 0, 0
     anahtar = s["Parça"].fillna("-") + "|" + s["S/N"]
-    return int(anahtar.nunique()), int(anahtar[s["_adet"] == 1].nunique())
+    return int(anahtar.nunique()), int(anahtar[_nihai_biten_maske(s)].nunique())
+
+
+def biten_parcalar_tablosu(d: pd.DataFrame) -> pd.DataFrame:
+    """Biten Parça kartındaki parçaların listesi (aynı kural). Tekrar işlenen parça bir kez görünür."""
+    kol = ["Tarih", "Parça", "Uzun Ref", "S/N", "Op", "Tezgah", "Operatör", "Saat"]
+    s = d[(d["Durum"] == "Üretim") & d["S/N"].notna()]
+    b = s[_nihai_biten_maske(s)]
+    if b.empty:
+        return pd.DataFrame(columns=kol)
+    sira = "_sira" if "_sira" in b.columns else "_bas"
+    b = b.sort_values(sira).drop_duplicates(["Parça", "S/N"], keep="last")
+    b = b.sort_values(["Parça", sira])
+    out = b[kol].copy()
+    out["Tarih"] = pd.to_datetime(out["Tarih"]).dt.date
+    return out.reset_index(drop=True)
+    
+def nihai_biten_metni(d: pd.DataFrame, max_sn: int = 150) -> str:
+    """AI için: nihai mamul olarak biten parçalar, parça bazlı S/N listesiyle."""
+    bt = biten_parcalar_tablosu(d)
+    if bt.empty:
+        return "NİHAİ BİTEN PARÇA (rotanın SON operasyonu BİTTİ): 0"
+    satirlar = [f"NİHAİ BİTEN PARÇA (rotanın SON operasyonu BİTTİ; ara operasyonlar sayılmaz): toplam {len(bt)}"]
+    for (p, o), g in bt.groupby(["Parça", "Op"]):
+        liste = ", ".join(g["S/N"]) if len(bt) <= max_sn else "(liste çok uzun)"
+        satirlar.append(f"  {p} (son Op {o}): {len(g)} adet — {liste}")
+    return "\n".join(satirlar)
 
 
 def biten_operasyon(d: pd.DataFrame) -> int:

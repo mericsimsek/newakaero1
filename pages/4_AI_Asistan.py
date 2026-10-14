@@ -3,7 +3,7 @@
 4_AI_Asistan.py — AI Fabrika Asistanı.
 """
 from __future__ import annotations
-from uretim_akisi import hazirla
+from uretim_akisi import hazirla, sn_sayilari, biten_parcalar_tablosu, nihai_biten_metni
 import pandas as pd
 import streamlit as st
 
@@ -37,7 +37,7 @@ st.caption(kaynak_notu)
 import datetime as _dt
 _bas_tarih = st.sidebar.date_input("📅 Başlangıç tarihi (öncesi bağlama girmez)", value=_dt.date(2026, 10, 1),
                                    format="DD.MM.YYYY", key="ai_baslangic")
-df = df[df["TARİH"] >= pd.Timestamp(_bas_tarih)]
+df = df[df["TARİH"] >= pd.Timestamp(_bas_tarih)].copy()
 if df.empty:
     st.warning("Seçilen başlangıç tarihinden sonra veri yok.")
     st.stop()
@@ -186,6 +186,15 @@ def _haftalik_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, hafta_sayisi: int =
     p["Net_Adet"] = t.groupby(h + ["Tezgah"])["_adet"].sum()
     t10 = p.reset_index()
     t10.columns.name = None
+    bt = biten_parcalar_tablosu(t)
+    if not bt.empty:
+        _iso = (pd.to_datetime(bt["Tarih"]) - pd.Timedelta(days=3)).dt.isocalendar()
+        bt["Yıl"], bt["Hafta"] = _iso.year.astype(int), _iso.week.astype(int)
+        _bp = bt.groupby(["Yıl", "Hafta", "Tezgah"]).size().rename("Biten_Parca").reset_index()
+    else:
+        _bp = pd.DataFrame(columns=["Yıl", "Hafta", "Tezgah", "Biten_Parca"])
+    t10 = (t10.merge(_bp, on=["Yıl", "Hafta", "Tezgah"], how="left").fillna({"Biten_Parca": 0})
+              .astype({"Biten_Parca": int}).rename(columns={"Net_Adet": "Tamamlanan_Op"}))
 
     # HAFTA-DETAY: Operatör × Tezgah × Parça × Op (her şey tek satırda, AI birleştirme yapmasın)
     t["Parça"] = t["Parça"].fillna("-")
@@ -197,23 +206,25 @@ def _haftalik_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, hafta_sayisi: int =
     for c in ad.values():
         if c not in pv.columns:
             pv[c] = 0
-    pv["Biten_Adet"] = t.groupby(keys)["_adet"].sum()
+    pv["Tamamlanan_Op"] = t.groupby(keys)["_adet"].sum()
     pv["Islem_Goren_SN"] = t[t["S/N"].notna()].groupby(keys)["S/N"].nunique()
-    t14 = pv[list(ad.values()) + ["Biten_Adet", "Islem_Goren_SN"]].fillna(0).round(2).reset_index()
+    t14 = pv[list(ad.values()) + ["Tamamlanan_Op", "Islem_Goren_SN"]].fillna(0).round(2).reset_index()
     t14.columns.name = None
 
     # HAFTA-4: Duruş / Set-up / Rework sebepleri
     d = t[t["Durum"].isin(["Plansız_Duruş", "Set_Up", "Rework"]) & (t["Sebep"] != "")]
     t13 = (d.groupby(h + ["Tezgah", "Durum", "Sebep"])["Süre"].sum().round(2).reset_index()
              .rename(columns={"Süre": "Saat"}))
-
     bas = ("Kullanıcı 'N. hafta' derse YALNIZCA Hafta=N satırlarını kullan; tarih aralığı hesaplama. "
-           "Hafta Perşembe–Çarşamba. Adet = BİTTİ alan S/N, parçanın bittiği haftada sayılır.")
+           "Hafta Perşembe–Çarşamba. Biten_Parca = rotanın son operasyonu BİTTİ olan parça, bittiği haftada sayılır. "
+           "Tamamlanan_Op ara operasyonlar dahil operasyon sayısıdır, parça sayısı değildir.")
     return (
-        "### HAFTA-1: TEZGAH TOPLAMLARI (saatler + Net_Adet). Toplam sorularında BUNU kullan.\n"
+        "### HAFTA-1: TEZGAH TOPLAMLARI (saatler + Biten_Parca nihai mamul + Tamamlanan_Op). "
+        "Toplam sorularında BUNU kullan.\n"
         + bas + "\n" + t10.to_csv(index=False) +
         "\n### HAFTA-DETAY: Operatör × Tezgah × Parça × Op (her satır tek bir kombinasyondur; "
-        "satırı olmayan kombinasyon YOKTUR)\n" + t14.to_csv(index=False) +
+        "satırı olmayan kombinasyon YOKTUR; Tamamlanan_Op = o operasyondaki bitiş sayısı, nihai parça sayısı DEĞİL)\n"
+        + t14.to_csv(index=False) +
         "\n### HAFTA-4: DURUŞ/SET-UP/REWORK SEBEPLERİ (saat)\n" + t13.to_csv(index=False)
     )
 
@@ -230,23 +241,26 @@ def _gunluk_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, gun_sayisi: int = 14)
     gunler = sorted(t["Gün"].unique())[-gun_sayisi:]
     t = t[t["Gün"].isin(gunler)]
     ur = t["Durum"] == "Üretim"
+    bt = biten_parcalar_tablosu(t)
 
     g1 = pd.DataFrame({
         "Uretim_sa": t[ur].groupby("Gün")["Süre"].sum(),
         "Plansiz_Durus_sa": t[t["Durum"] == "Plansız_Duruş"].groupby("Gün")["Süre"].sum(),
         "SetUp_Rework_sa": t[t["Durum"].isin(["Set_Up", "Rework"])].groupby("Gün")["Süre"].sum(),
-        "Islem_Goren_SN": t.groupby("Gün")["_a"].nunique(),
-        "Biten_Adet": t.groupby("Gün")["_adet"].sum(),
+        "Islem_Goren_Parca": pd.Series({g_: sn_sayilari(d_)[0] for g_, d_ in t.groupby("Gün")}).rename_axis("Gün"),
+        "Biten_Parca": bt.groupby("Tarih").size().rename_axis("Gün"),
     }).fillna(0).round(2).reset_index()
+    g1["Biten_Parca"] = g1["Biten_Parca"].astype(int)
 
     p = t.pivot_table(index=["Gün", "Tezgah"], columns="Durum", values="Süre", aggfunc="sum", fill_value=0).round(2)
-    p["Biten_Adet"] = t.groupby(["Gün", "Tezgah"])["_adet"].sum()
+    p["Biten_Parca"] = bt.groupby(["Tarih", "Tezgah"]).size().rename_axis(["Gün", "Tezgah"]).reindex(p.index).fillna(0).astype(int)
+    p["Tamamlanan_Op"] = t.groupby(["Gün", "Tezgah"])["_adet"].sum()
     g2 = p.reset_index()
     g2.columns.name = None
 
     b = t[(t["_adet"] == 1) & t["Gün"].isin(gunler[-7:])]
-    g3 = (b[["Gün", "Tezgah", "Parça", "Op", "S/N", "Operatör"]]
-          .rename(columns={"Operatör": "Bitiren_Operatör"}).sort_values(["Gün", "Tezgah"]))
+    g3 = (bt[bt["Tarih"].isin(gunler[-7:])][["Tarih", "Tezgah", "Parça", "Op", "S/N", "Operatör"]]
+          .rename(columns={"Tarih": "Gün", "Operatör": "Bitiren_Operatör"}).sort_values(["Gün", "Tezgah"]))
         # GÜN-4: Gün × Operatör × Tezgah: üretim saati + biten adet + biten S/N listesi
     key4 = ["Gün", "Operatör", "Tezgah"]
     g4 = t[ur].groupby(key4).agg(Uretim_sa=("Süre", "sum")).round(2)
@@ -254,15 +268,22 @@ def _gunluk_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, gun_sayisi: int = 14)
     g4["Biten_SN"] = t[t["_adet"] == 1].groupby(key4)["S/N"].apply(lambda s: ";".join(s.astype(str)))
     g4 = g4.fillna({"Biten_Adet": 0, "Biten_SN": ""}).astype({"Biten_Adet": int}).reset_index()
 
-    kural = ("ADET KURALI: 'çıkan parça / biten adet / kaç parça' sorularında SADECE GÜN-1, GÜN-2, GÜN-3 "
-             "ve HAFTA tablolarını kullan; bunlar TÜM parçaları kapsar. S/N izleme tabloları (TABLO 10, 14 vb.) "
-             "yalnızca 2547M01G03 Op 60 içindir, fabrika toplamı için KULLANMA. "
-             "Bir S/N ancak GÜN-3 listesinde varsa tamamlanmıştır. ")
+    kural = ("ADET KURALI: 'çıkan parça / biten parça / kaç parça' sorularında SADECE GÜN-1, GÜN-2, GÜN-3 "
+             "ve HAFTA tablolarını kullan; bunlar TÜM parçaları kapsar. "
+             "Biten_Parca = nihai mamul (rotanın SON operasyonu BİTTİ). Tamamlanan_Op ve Biten_Adet ara operasyonları "
+             "da içeren operasyon sayısıdır, parça sayısı DEĞİLDİR. "
+             "S/N izleme tabloları (TABLO 10, 14 vb.) yalnızca 2547M01G03 Op 60 içindir, fabrika toplamı için KULLANMA. "
+             "Bir parça ancak GÜN-3 listesinde varsa nihai olarak tamamlanmıştır. ")
     return (
-        "### GÜN-1: GÜNLÜK FABRİKA TOPLAMI (tüm parçalar, saat + Biten_Adet)\n" + kural + "\n" + g1.to_csv(index=False) +
-        "\n### GÜN-2: GÜNLÜK TEZGAH ÖZETİ (saat + Biten_Adet)\n" + g2.to_csv(index=False) +
-        "\n### GÜN-3: SON 7 GÜNDE BİTEN S/N LİSTESİ (hangi parça, kim bitirdi)\n" + g3.to_csv(index=False)        + "\n### GÜN-4: GÜNLÜK OPERATÖR×TEZGAH (üretim saati, Biten_Adet, Biten_SN listesi). "
-          "Bir operatörün gün/aralık bazlı biten parça sorusunda BUNU kullan; o operatörün satırlarındaki Biten_Adet'i topla.\n"
+        "### GÜN-1: GÜNLÜK FABRİKA TOPLAMI (saat + işlem gören parça + Biten_Parca = nihai mamul)\n"
+        + kural + "\n" + g1.to_csv(index=False) +
+        "\n### GÜN-2: GÜNLÜK TEZGAH ÖZETİ (saat + Biten_Parca nihai mamul + Tamamlanan_Op)\n"
+        + g2.to_csv(index=False) +
+        "\n### GÜN-3: SON 7 GÜNDE NİHAİ MAMUL OLARAK BİTEN PARÇALAR (hangi parça, hangi tezgah, kim bitirdi)\n"
+        + g3.to_csv(index=False) +
+        "\n### GÜN-4: GÜNLÜK OPERATÖR×TEZGAH (üretim saati, Biten_Adet = operatörün tamamladığı OPERASYON sayısı, "
+        "Biten_SN = bu operasyonları biten S/N listesi). Bir operatörün gün/aralık bazlı işi sorulursa BUNU kullan; "
+        "nihai parça sayısı için GÜN-3'te o operatörün satırlarını say.\n"
         + g4.to_csv(index=False)
     )
 # =============================================================================
@@ -364,6 +385,7 @@ KURALLAR:
 5. Veride olmayan bir şeyi UYDURMA. Emin değilsen açıkça "bu veriyle hesaplanamıyor" de.
 6. Farklı tabloları kendi kafandan ÇAPRAZLAMA (ör. operatör tablosu ile parça tablosunu birleştirip tezgah çıkarma). Operatör+tezgah+parça sorularında SADECE HAFTA-DETAY'ı kullan; orada satırı olmayan kombinasyon veride YOKTUR. Toplam sorularında HAFTA-1 / GÜN-1 satırlarını kullan; kendin topladıysan hangi satırları topladığını yaz.
 7. Bir operatörün gün/tarih aralığında kaç parça bitirdiği sorulursa SADECE GÜN-4'ü kullan: o operatörün Biten_Adet'lerini topla, Biten_SN'leri tek tek say ve listele. TABLO 3 duruş paretosudur, S/N kaynağı DEĞİLDİR; S/N için asla TABLO 3 gösterme.
+8. 'Kaç parça çıktı / biten parça' = Biten_Parca (nihai mamul, rotanın son operasyonu BİTTİ). Tamamlanan_Op ve Biten_Adet ara operasyonları da içeren operasyon sayısıdır, parça sayısı DEĞİLDİR; karıştırma.
 {SN_AI_KURALI}
 
 --- METRİK SÖZLÜĞÜ (bu sohbette kullanılan tablolarla ilgili formüller) ---
@@ -392,7 +414,7 @@ def _teyit_ac_kapat(anahtar: str):
 
 def _teyit_alani(idx: int):
     gecmis = st.session_state.sohbet_gecmisi
-    soru_metni = gecmis[idx - 1]["content"] if idx > 0 and gecmis[idx - 1]["role"] == "user" else ""
+    soru_metni = gecmis[idx - 1].get("gorunen", gecmis[idx - 1]["content"]) if idx > 0 and gecmis[idx - 1]["role"] == "user" else ""
     anahtar = f"teyit_acik_{idx}"
     acik = st.session_state.get(anahtar, False)
     st.button("✖ Teyidi kapat" if acik else "🔍 Bu cevabı gerçek veriyle teyit et", key=f"teyit_btn_{idx}",
@@ -539,32 +561,35 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
         if f.empty:
             return f"HESAPLANMIŞ SONUÇ — {etiket}: kayıt yok."
         def _fiz(d):
-            b = d[d["_adet"] == 1]
-            return (b["Parça"].fillna("-") + "|" + b["S/N"].astype(str)).nunique()
+            return sn_sayilari(d)[1]
         def _ozet(d):
             sm = lambda x: d.loc[d["Durum"] == x, "Süre"].sum()
             return (f"Üretim {sm('Üretim'):.2f} sa | Plansız duruş {sm('Plansız_Duruş'):.2f} sa | "
                     f"Set-up {sm('Set_Up'):.2f} sa | Rework {sm('Rework'):.2f} sa | "
-                    f"Biten operasyon çıktısı: {int(d['_adet'].sum())} adet | "
-                    f"Farklı fiziksel S/N (bitmiş): {_fiz(d)}")
+                    f"BİTEN PARÇA (nihai mamul): {sn_sayilari(d)[1]} | "
+                    f"Tamamlanan operasyon (ara operasyonlar dahil): {int(d['_adet'].sum())}")
+
 
         satirlar = [f"HESAPLANMIŞ SONUÇ (Python, kesin; AI bu rakamları aynen kullanmalı, kendi toplamasın) — {etiket}",
                     ("SEÇİLİ TEZGAHLAR TOPLAMI: " if tz_l else "FABRİKA TOPLAMI: ") + _ozet(f), "TEZGAH BAZLI:"]
+        for tz, d in f.groupby("Tezgah"):
+            satirlar.append(f"  {tz}: " + _ozet(d))
+        satirlar.append(nihai_biten_metni(f))
         if tz_l or "hangi" in q or re.search(r"\bsn|s/n|seri|parca", q):
             u = f[f["Durum"] == "Üretim"].assign(Parça=lambda d: d["Parça"].fillna("-"), Op=lambda d: d["Op"].fillna("-"))
             sn_iste = u["S/N"].nunique() <= 250   # çok büyük aralıkta sadece sayılar (bağlam şişmesin)
-            satirlar.append("PARÇA BAZLI (yalnızca üretim kayıtları; tezgah | parça Op: üretim saati, biten adet, operatörler"
+            satirlar.append("PARÇA BAZLI (üretim kayıtları; tezgah | parça Op: üretim saati, tamamlanan operasyon, operatörler"
                             + ("; S/N listeleri" if sn_iste else "") + "):")
             parca_satir = []
             for (tz, p, o), d in u.groupby(["Tezgah", "Parça", "Op"]):
                 ops = ", ".join(sorted({a.split()[0] for a in d["Operatör"] if a != "-"}))
                 tum = sorted(d["S/N"].dropna().astype(str).unique())
                 bit = sorted(d.loc[d["_adet"] == 1, "S/N"].dropna().astype(str).unique())
-                satir = (f"  {tz} | {p} Op {o}: üretim {d['Süre'].sum():.2f} sa, biten {int(d['_adet'].sum())} adet, "
+                satir = (f"  {tz} | {p} Op {o}: üretim {d['Süre'].sum():.2f} sa, tamamlanan operasyon {int(d['_adet'].sum())}, "
                          f"işlem gören S/N: {len(tum)}, operatör: {ops}")
                 if sn_iste:
                     bitmeyen = [x for x in tum if x not in bit]
-                    satir += f"\n      biten S/N: {', '.join(bit) or '-'}"
+                    satir += f"\n      bu operasyonu biten S/N: {', '.join(bit) or '-'}"
                     if bitmeyen:
                         satir += f"\n      işlenen ama bu aralıkta bitmeyen S/N: {', '.join(bitmeyen)}"
                 parca_satir.append((d["Süre"].sum(), satir))
@@ -583,8 +608,8 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
         satirlar.append(
             f"{kisi}: Üretim {s('Üretim'):.2f} sa | Plansız duruş {s('Plansız_Duruş'):.2f} sa | "
             f"Set-up {s('Set_Up'):.2f} sa | Rework {s('Rework'):.2f} sa | Toplam {k['Süre'].sum():.2f} sa | "
-            f"Biten operasyon çıktısı: {len(bit)} adet | "
-            f"Farklı fiziksel S/N (bitmiş): {(bit['Parça'].fillna('-') + '|' + bit['S/N'].astype(str)).nunique()}")
+            f"Tamamladığı operasyon: {len(bit)} adet | "
+            f"Bunlardan nihai mamul (son operasyonu bitiren): {sn_sayilari(k)[1]}")
         for gun, g in bit.groupby(bit["Tarih"].dt.date):
             satirlar.append(f"  {gun:%d.%m.%Y}: {len(g)} adet — " + ", ".join(
                 f"{sn} ({tz}, {p} Op {o})" for sn, tz, p, o in zip(g["S/N"], g["Tezgah"], g["Parça"], g["Op"])))
@@ -601,10 +626,12 @@ SISTEM_KISA = (
     "Sen fabrika üretim asistanısın. Kullanıcı mesajındaki 'HESAPLANMIŞ SONUÇ' Python ile hesaplanmış "
     "kesin sonuçtur. Cevabını SADECE bu sonuca dayandır: rakamları aynen kullan, toplama/çıkarma yapma, "
     "başka tablo veya kaynak (TABLO 2, TABLO 21, GÜN-4, HAFTA vb.) ekleme, sonuçta olmayan bilgiyi uydurma. "
-    "Sonuçta S/N listesi varsa HER parça+operasyon için TÜM S/N'leri eksiksiz yaz, hiçbirini atlama veya "
-    "'vb.' deme; en sonda toplam S/N sayısını yaz. Türkçe ve düzenli yaz. "
+    "BİTEN PARÇA = nihai mamul (rotanın son operasyonu BİTTİ); 'kaç parça çıktı' sorusunda BU sayıyı ve "
+    "'NİHAİ BİTEN PARÇA' listesini kullan. 'Tamamlanan operasyon' ara operasyonları da içerir, ayrı bir sayıdır. "
+    "Ara operasyon tezgahlarında (ör. AB-03) biten parça 0 olabilir, bu üretim yok demek değildir; bunu kısaca belirt. "
+    "Sonuçta S/N listesi varsa HER parça için TÜM S/N'leri eksiksiz yaz, hiçbirini atlama veya 'vb.' deme; "
+    "en sonda toplam sayıyı yaz. Türkçe ve düzenli yaz. "
     "Sonuçta olmayan bir şey sorulursa 'bu hesapta yok' de."
-    "Kutuda 'Biten operasyon çıktısı' ve 'Farklı fiziksel S/N' iki ayrı sayı varsa ikisini de yaz ve farkını kısaca açıkla (aynı parça birden fazla operasyondan geçer). "
 )
 
 def _hesapli_mi() -> bool:
