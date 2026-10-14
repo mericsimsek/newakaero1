@@ -246,9 +246,8 @@ def hazirla(veri: pd.DataFrame):
     g = U.groupby("_a", sort=False)
 
     # KURAL 1: grupta BİTTİ varsa "1", grubun kronolojik EN SON satırına yazılır
-    son_satir = ~U.duplicated("_a", keep="last")
-    
-    U["_adet"] = (g["_bitti"].transform("any") & son_satir).astype(int)
+    _b = U["_bitti"]
+    U["_adet"] = (_b & ~U["_a"].where(_b).duplicated(keep="last")).astype(int)
     U["Adet"] = np.where(U["_adet"] == 1, "1", "")
 
     # KURAL 2: satırın grup içindeki konumuna göre sadece o satırın devir bilgisi
