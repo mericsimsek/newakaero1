@@ -18,7 +18,7 @@ st.markdown("<style>[data-testid='stMetricValue']{font-size:2.4rem;font-weight:7
 st.title("🏭 Günlük Üretim Akışı")
 
 df_ham, _df, kaynak_notu = veri_yukle_ve_filtrele("home")
-st.caption(kaynak_notu)
+
 
 T, c_bitti = hazirla(df_ham)
 
@@ -27,8 +27,9 @@ if T.empty or T["Tarih"].notna().sum() == 0:
     st.stop()
 
 mn, mx = T["Tarih"].min().date(), T["Tarih"].max().date()
-sec = st.date_input("📅 Tarih (tek gün ya da aralık)", value=(mx, mx), min_value=mn, max_value=mx,
-                    format="DD.MM.YYYY", key="f_tarih")
+col_tarih, col_bos = st.columns([2, 6]) # Ekranı 2'ye 6 oranında böler
+with col_tarih:
+    sec = st.date_input("📅 Tarih", value=(mx, mx), min_value=mn, max_value=mx, format="DD.MM.YYYY", key="f_tarih")
 if isinstance(sec, (tuple, list)):
     if not sec: st.stop()
     d_bas, d_bit = sec[0], sec[-1]
@@ -106,7 +107,7 @@ if x.empty:
     st.stop()
 
 if not x.empty and (s_tez or s_kisi or s_durum or s_parca or s_uzun):
-    st.info(f"**Aşağıdaki Tablonun Özeti:** Toplam {len(x)} satır listelendi.")
+
     o_uretim = x[x["Durum"] == "Üretim"]["Süre"].sum()
     o_durus = x[x["Durum"] == "Plansız_Duruş"]["Süre"].sum()
     o_setup = x[x["Durum"] == "Set_Up"]["Süre"].sum()
