@@ -103,11 +103,12 @@ if not x.empty and (s_tez or s_kisi or s_durum or s_parca or s_uzun):
     o_setup = x[x["Durum"] == "Set_Up"]["Süre"].sum()
     o_rework = x[x["Durum"] == "Rework"]["Süre"].sum()
     
-    oz1, oz2, oz3, oz4 = st.columns(4)
+    oz1, oz2, oz3, oz4, oz5 = st.columns(5)
     oz1.metric("⚙️ Net Üretim", f"{o_uretim:,.2f} sa")
     oz2.metric("🛑 Plansız Duruş", f"{o_durus:,.2f} sa")
-    oz3.metric("🔧 Set-up & Rework", f"{(o_setup + o_rework):,.2f} sa")
-    oz4.metric("✅ Biten Parça", sn_sayilari(x)[1] if c_bitti else "—")
+    oz3.metric("🔧 Set-up", f"{o_setup:,.2f} sa")
+    oz4.metric("♻️ Rework", f"{o_rework:,.2f} sa")
+    oz5.metric("✅ Biten Parça", sn_sayilari(x)[1] if c_bitti else "—")
 sadece_biten = st.toggle("✅ Sadece biten parçaları göster (nihai mamul)", key="goster_biten", disabled=not c_bitti)
 xg = x[x.index.isin(nihai_biten_satirlar(x))] if sadece_biten else x
 if sadece_biten:
