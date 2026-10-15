@@ -498,7 +498,8 @@ for _i, mesaj in enumerate(st.session_state.sohbet_gecmisi):
     with st.chat_message(mesaj["role"]):
         st.markdown(mesaj.get("gorunen", mesaj["content"]))
         if mesaj.get("hesap"):
-            st.info(mesaj["hesap"])
+            with st.expander("🔍 Hesaplanan veri (AI'a giden)", expanded=False):
+                st.text(mesaj["hesap"])
         if mesaj["role"] == "assistant":
             _teyit_alani(_i)
 
@@ -687,7 +688,8 @@ if soru:
     with st.chat_message("user"):
         st.markdown(soru)
         if hesap:
-            st.info(hesap)
+            with st.expander("🔍 Hesaplanan veri (AI'a giden)", expanded=False):
+                st.text(hesap)
         
 
     try:    
