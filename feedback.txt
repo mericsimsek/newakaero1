@@ -133,3 +133,58 @@ peki hangi tezgahlar çalışmış en çok çalışan tezgahın özetini ver ka�
 
 2h567 ertuğrul
 2h56l ertuğrul
+
+
+1. 2H85R (T170046 OP20, AB-07) iki kez BİTTİ
+
+Yaşar, satır 5492, 13:15–15:00, 1,75 sa, BİTTİ.
+Ertuğrul, satır 5499, 19:00–20:00, 1,0 sa, BİTTİ.
+Yaşar 15:00'te AB-10'a geçmiş, AB-07'de 15:00–19:00 kimse yok. Parça büyük ihtimalle 15:00'te bitmemiş, Yaşar’ın BİTTİ işareti hatalı.
+
+
+2. Yanlış parça girişi (Nazif Güçlüdağ, AB-03)
+
+2H90A, satır 5545, 15:00–17:30, M52G04 OP30 girilmiş. Bu S/N 12.10'da M01G03 OP15 olarak çalışılmış.
+2H90E, satır 5546, 17:30–19:00, M52G04 OP30 girilmiş. Aynı S/N 12–15 Ekim arasında 4 kez M01G03 olarak geçiyor, Emre Toprak’ın 19:00 devri de M01G03 (satır 5529). Nazif’in 1,5 saati + Emre’nin 1,0 saati tam OP30 süresi ediyor.
+İkisi de M01G03 OP30 olmalı. 66 ile 64 arasındaki farkın bir kısmı bu.
+
+
+nazif yaşar ertuğrul aşkın 10  
+ilker 10u 6.5 saat setup
+
+cihan 1 3
+
+emre 2 3
+
+muhammed 13
+
+nurullah 3 
+
+taner 5
+
+ali 6 7
+
+
+ara operasyon bakılsın
+
+filtreli m01 mesela göstersin net çalışma saati vb. 
+çalışan tezgahlar çalışmayanlar
+vardiya ekle
+
+şu kişi kaç saat çalıştı etti naptı 
+11inde kimler çalıştı kaç saat 
+
+
+14 ekim 07:00 - 15:00 vardiyasında kaç adet parça tamamlandı
+
+
+1. parça süreleri CT  2.5 saatte parçayı 3 saatte yaptı
+
+çekilen veriler geçen haftalar çıksın  panolara koyalım günlük olarak devam edelim 
+fiziksel kağıdı özetler vb. çıksın panoya bakalım
+
+tüm herşey bilincek kim geliyo ne kadar kaç op hangi vardiya tezgah çalışıyo 
+vardiyalarda 7 kişi var  
+
+
+bi ustaların nazif ergin yaşar ustanın yanına git nasıl gidiyor de 

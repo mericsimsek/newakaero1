@@ -14,7 +14,25 @@ from common import veri_yukle_ve_filtrele
 from uretim_akisi import hazirla, sn_sayilari, biten_operasyon, nihai_biten_satirlar, gunluk_ai_baglami_olustur, op_ad, _op_sirala, CALISMA
 
 st.set_page_config(page_title="Günlük Üretim Akışı", layout="wide", page_icon="🏭")
-st.markdown("<style>[data-testid='stMetricValue']{font-size:2.4rem;font-weight:700}</style>", unsafe_allow_html=True)
+st.markdown("""
+<style>
+    /* Büyük Rakamların (Değerlerin) Boyutu */
+    [data-testid='stMetricValue'] {
+        font-size: 2.5rem !important;
+        font-weight: 700 !important;
+    }
+    /* Kartların Başlıklarının (Etiketlerin) Boyutu */
+    [data-testid='stMetricLabel'] {
+        font-size: 1.3rem !important;
+        font-weight: 600 !important;
+    }
+    /* Kartların Başlıklarının altındaki açıklama ikonlarını (?) hizalama */
+    [data-testid='stMetricLabel'] svg {
+        width: 1.2rem;
+        height: 1.2rem;
+    }
+</style>
+""", unsafe_allow_html=True)
 st.title("🏭 Günlük Üretim Akışı")
 
 df_ham, _df, kaynak_notu = veri_yukle_ve_filtrele("home")
