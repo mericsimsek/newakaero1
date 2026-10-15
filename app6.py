@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from common import veri_yukle_ve_filtrele
-from uretim_akisi import hazirla, sn_sayilari, biten_operasyon, biten_parcalar_tablosu, gunluk_ai_baglami_olustur, op_ad, _op_sirala, CALISMA
+from uretim_akisi import hazirla, sn_sayilari, biten_operasyon, nihai_biten_satirlar, gunluk_ai_baglami_olustur, op_ad, _op_sirala, CALISMA
 
 st.set_page_config(page_title="Günlük Üretim Akışı", layout="wide", page_icon="🏭")
 st.markdown("<style>[data-testid='stMetricValue']{font-size:2.4rem;font-weight:700}</style>", unsafe_allow_html=True)
@@ -23,6 +23,8 @@ df_ham, _df, kaynak_notu = veri_yukle_ve_filtrele("home")
 T, c_bitti = hazirla(df_ham)
 
 if T.empty or T["Tarih"].notna().sum() == 0:
+
+
     st.warning("Gösterilecek tarih/veri bulunamadı.")
     st.stop()
 
@@ -53,19 +55,7 @@ k4.metric("📦 İşlem Gören Parça (benzersiz S/N)", sn_islem,
           help="Seçili tarihte üretim kaydı olan farklı S/N sayısı.")
 k5.metric("✅ Biten Parça", sn_biten if c_bitti else "—",
           help="Rotasının SON (FİNİSH) operasyonu BİTTİ olan farklı S/N sayısı (nihai mamul).")
-if st.toggle("📋 Biten parçaları göster", key="goster_biten", disabled=not c_bitti):
-    bt = biten_parcalar_tablosu(G)
-    if bt.empty:
-        st.info("Seçili tarihte nihai mamul olarak biten parça yok.")
-    else:
-        ozet = bt.groupby("Parça").size().sort_values(ascending=False)
-        st.markdown(f"**Toplam {len(bt)} parça bitti:** " + "  ·  ".join(f"{p}: **{n}**" for p, n in ozet.items()))
-        st.dataframe(
-            bt.rename(columns={"Op": "Son Op", "Saat": "Son Kayıt Saati"}),
-            use_container_width=True, hide_index=True,
-            height=min(80 + 35 * len(bt), 600),
-            column_config={"Tarih": st.column_config.DateColumn(format="DD.MM.YYYY")},
-        )
+
 st.markdown("---")
 
 st.markdown("### 🔍 Detaylı İnceleme ve Filtreler")
@@ -118,15 +108,24 @@ if not x.empty and (s_tez or s_kisi or s_durum or s_parca or s_uzun):
     oz2.metric("🛑 Plansız Duruş", f"{o_durus:,.2f} sa")
     oz3.metric("🔧 Set-up & Rework", f"{(o_setup + o_rework):,.2f} sa")
     oz4.metric("✅ Biten Parça", sn_sayilari(x)[1] if c_bitti else "—")
-
-gos = x[["Tarih", "Vardiya", "Saat", "Tezgah", "Operatör", "Parça – Op", "Uzun Ref", "S/N", 
-         "İşlem Adımı", "Süre", "Adet", "Durum / Sebep"]].copy()
+sadece_biten = st.toggle("✅ Sadece biten parçaları göster (nihai mamul)", key="goster_biten", disabled=not c_bitti)
+xg = x[x.index.isin(nihai_biten_satirlar(x))] if sadece_biten else x
+if sadece_biten:
+    if xg.empty:
+        st.info("Seçili tarih ve filtrelerle nihai mamul olarak biten parça yok.")
+    else:
+        ozet = xg.groupby("Parça").size().sort_values(ascending=False)
+        st.markdown(f"**{len(xg)} parça nihai mamul olarak bitti:** "
+                    + "  ·  ".join(f"{p}: **{n}**" for p, n in ozet.items()))
+        st.caption("Tabloda her parçanın son (FİNİSH) operasyon satırı görünüyor.")
+gos = xg[["Tarih", "Vardiya", "Saat", "Tezgah", "Operatör", "Parça – Op", "Uzun Ref", "S/N",
+          "İşlem Adımı", "Süre", "Adet", "Durum / Sebep"]].copy()
 
 gos["Tarih"] = gos["Tarih"].dt.date
 gos["S/N"] = gos["S/N"].fillna("")
 gos = gos.rename(columns={"Süre": "Süre (sa)"})
 
-st.dataframe(gos, use_container_width=True, hide_index=True, height=650,key=f"tablo_{s_sira}_{len(x)}", column_config={
+st.dataframe(gos, use_container_width=True, hide_index=True, height=650,key=f"tablo_{s_sira}_{sadece_biten}_{len(xg)}", column_config={
     "Tarih": st.column_config.DateColumn(format="DD.MM.YYYY"),
     "Süre (sa)": st.column_config.NumberColumn(format="%.2f"),
 })

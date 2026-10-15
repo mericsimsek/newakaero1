@@ -119,6 +119,16 @@ def biten_parcalar_tablosu(d: pd.DataFrame) -> pd.DataFrame:
     out["Tarih"] = pd.to_datetime(out["Tarih"]).dt.date
     return out.reset_index(drop=True)
     
+def nihai_biten_satirlar(d: pd.DataFrame) -> pd.Index:
+    """Biten Parça kartındaki parçaların SON operasyon (FİNİSH) BİTTİ satırlarının indeksi.
+    Tekrar işlenen parça için son bitişi alır. Ana tabloyu bu satırlara daraltmak için kullanılır."""
+    s = d[(d["Durum"] == "Üretim") & d["S/N"].notna()]
+    b = s[_nihai_biten_maske(s)]
+    if b.empty:
+        return b.index
+    sira = "_sira" if "_sira" in b.columns else "_bas"
+    return b.sort_values(sira).drop_duplicates(["Parça", "S/N"], keep="last").index
+    
 def nihai_biten_metni(d: pd.DataFrame, max_sn: int = 150) -> str:
     """AI için: nihai mamul olarak biten parçalar, parça bazlı S/N listesiyle."""
     bt = biten_parcalar_tablosu(d)
