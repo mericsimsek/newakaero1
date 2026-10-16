@@ -145,52 +145,139 @@ def biten_operasyon(d: pd.DataFrame) -> int:
     """Biten operasyon çıktısı: her (Parça, Op, S/N) için 1. Op 10 ve Op 20 ayrı sayılır."""
     return int(d["_adet"].sum())
 
-def gunluk_ai_baglami_olustur(df_tablo: pd.DataFrame, secili_tarih) -> str:
-    """Ekrandaki filtrelenmiş tabloyu AI için kısa bir metne çevirir. Sadece str döndürür."""
+_DURUM_KOL = {"Üretim": "⚙️ Net Üretim (sa)", "Plansız_Duruş": "🛑 Plansız Duruş (sa)",
+              "Set_Up": "🔧 Set-up (sa)", "Rework": "♻️ Rework (sa)"}
+
+
+def saat_tablosu(d: pd.DataFrame, anahtar: str, tum: list | None = None) -> pd.DataFrame:
+    """anahtar (Tezgah / Operatör) bazında Üretim, Duruş, Set-up, Rework saatleri + toplam.
+    tum verilirse kaydı olmayanlar da 0.00 satır olarak gelir."""
+    if d.empty:
+        p = pd.DataFrame(0.0, index=pd.Index(tum or [], name=anahtar), columns=list(_DURUM_KOL))
+    else:
+        p = (d.pivot_table(index=anahtar, columns="Durum", values="Süre", aggfunc="sum", fill_value=0)
+              .reindex(columns=list(_DURUM_KOL), fill_value=0))
+        if tum is not None:
+            p = p.reindex(tum, fill_value=0)
+    p = p.rename(columns=_DURUM_KOL)
+    p["⏱️ Toplam (sa)"] = p.sum(axis=1)
+    return p.round(2).rename_axis(anahtar).reset_index()
+
+
+def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_operator=None, gun_siniri=14, detay_gun=7):
+    """Seçili aralığı AI için kompakt, ÖN-HESAPLANMIŞ metne çevirir (AI toplama yapmasın). Sadece str döndürür."""
     if isinstance(secili_tarih, (tuple, list)) and len(secili_tarih) > 0:
         a, b = secili_tarih[0], secili_tarih[-1]
         tarih_txt = a.strftime("%d.%m.%Y") if a == b else f"{a.strftime('%d.%m.%Y')} – {b.strftime('%d.%m.%Y')}"
     else:
         tarih_txt = secili_tarih.strftime("%d.%m.%Y") if hasattr(secili_tarih, "strftime") else str(secili_tarih)
-
     if df_tablo is None or df_tablo.empty:
         return f"Tarih: {tarih_txt} | Bu filtrelerle kayıt yok."
 
-    uretim = df_tablo.loc[df_tablo["Durum"] == "Üretim", "Süre"].sum()
-    durus_m = df_tablo["Durum"].astype(str).str.contains("Duru", case=False, na=False)
-    durus = df_tablo.loc[durus_m, "Süre"].sum()
-    setup_rw = df_tablo.loc[df_tablo["Durum"].isin(["Set_Up", "Rework"]), "Süre"].sum()
-    sn_islem, sn_biten = sn_sayilari(df_tablo)
+    d = df_tablo.copy()
+    d["Gün"] = pd.to_datetime(d["Tarih"]).dt.date
+    d["Vardiya"] = d["Vardiya"].fillna("-")
+    d["_nihai"] = d.index.isin(nihai_biten_satirlar(d)).astype(int)
+    son_gunler = sorted(d["Gün"].unique())[-gun_siniri:]
+    dd = d[d["Gün"].isin(son_gunler)]
+    sira = "_sira" if "_sira" in d.columns else "_bas"
 
-    satirlar = [
-        f"Tarih: {tarih_txt} | Listelenen satır: {len(df_tablo)}",
-        f"Üretim: {uretim:.1f} sa | Duruş: {durus:.1f} sa | Set-up+Rework: {setup_rw:.1f} sa",
-        f"İşlem gören farklı parça (S/N): {sn_islem} | Biten farklı parça (S/N): {sn_biten} | "
-        f"Biten operasyon çıktısı: {int(df_tablo['_adet'].sum())}",
-    ]
+    def _ozet(x, anahtar):
+        p = (x.pivot_table(index=anahtar, columns="Durum", values="Süre", aggfunc="sum", fill_value=0)
+              .reindex(columns=["Üretim", "Plansız_Duruş", "Set_Up", "Rework"], fill_value=0))
+        p.columns = ["Uretim_sa", "Durus_sa", "SetUp_sa", "Rework_sa"]
+        p["Toplam_sa"] = p.sum(axis=1)
+        p["Tamamlanan_Op"] = x.groupby(anahtar)["_adet"].sum().reindex(p.index).fillna(0).astype(int)
+        p["Nihai_Parca"] = x.groupby(anahtar)["_nihai"].sum().reindex(p.index).fillna(0).astype(int)
+        return p.round(2)
 
-    d = df_tablo[durus_m]
-    if not d.empty:
-        sebep = (d[d["Sebep"].astype(str).str.strip() != ""]
-                 .groupby("Sebep")["Süre"].sum().sort_values(ascending=False).head(3))
-        if not sebep.empty:
-            satirlar.append("En çok duruş sebebi: " + "; ".join(f"{k} ({v:.1f}sa)" for k, v in sebep.items()))
-        tez = d.groupby("Tezgah")["Süre"].sum().sort_values(ascending=False).head(3)
-        if not tez.empty:
-            satirlar.append("En çok duran tezgah: " + "; ".join(f"{k} ({v:.1f}sa)" for k, v in tez.items()))
+    def _csv(t):
+        t = t.copy()
+        if "Gün" in t.columns:
+            t["Gün"] = t["Gün"].map(lambda g: f"{g:%d.%m.%Y}")
+        return t.to_csv(index=False)
 
-    # TEZGAH BAZLI GÜNCEL ÖZETİ HESAPLA VE AI'A GÖNDER
-    p = df_tablo.pivot_table(index="Tezgah", columns="Durum", values="Süre", aggfunc="sum", fill_value=0)
-    tz = pd.DataFrame({
-        "Üretim_sa": p.get("Üretim", 0),
-        "Plansız_Duruş_sa": p.get("Plansız_Duruş", 0),
-        "SetUp_sa": p.get("Set_Up", 0),
-        "Rework_sa": p.get("Rework", 0),
-        "Net_Adet": df_tablo.groupby("Tezgah")["_adet"].sum(),
-    }).fillna(0).round(2)
-    
-    satirlar.append("TEZGAH BAZLI ÖZET (bu tarih aralığı):\n" + tz.reset_index().to_csv(index=False))
-    return "\n".join(satirlar)
+    # a) Gün × Vardiya (+ her gün için hazır TÜM GÜN toplamı)
+    a1 = _ozet(dd, ["Gün", "Vardiya"]).reset_index()
+    a2 = _ozet(dd, ["Gün"]).reset_index().assign(Vardiya="TÜM GÜN")
+    ta = pd.concat([a1, a2], ignore_index=True)
+    ta["_s"] = (ta["Vardiya"] == "TÜM GÜN").astype(int)
+    ta = ta.sort_values(["Gün", "_s", "Vardiya"]).drop(columns="_s")
+    ta = ta[["Gün", "Vardiya"] + [c for c in ta.columns if c not in ("Gün", "Vardiya")]]
+
+    tum = _ozet(d.assign(_k="x"), ["_k"]).iloc[0]
+    aralik = (f"TÜM ARALIK ({tarih_txt}): Üretim {tum['Uretim_sa']:.2f} sa | Plansız duruş {tum['Durus_sa']:.2f} sa | "
+              f"Set-up {tum['SetUp_sa']:.2f} sa | Rework {tum['Rework_sa']:.2f} sa | Toplam {tum['Toplam_sa']:.2f} sa | "
+              f"Tamamlanan_Op {int(tum['Tamamlanan_Op'])} | Nihai_Parca {int(tum['Nihai_Parca'])}")
+
+    # b) Tezgah ve operatör (aralık toplamı + gün bazlı)
+    dz = d[d["Tezgah"].notna() & (d["Tezgah"] != "-")]
+    do = d[d["Operatör"].notna() & (d["Operatör"] != "-")]
+    tez_top = _ozet(dz, ["Tezgah"]).reset_index()
+    op_top = _ozet(do, ["Operatör"]).reset_index()
+    tez_gun = _ozet(dz[dz["Gün"].isin(son_gunler)], ["Gün", "Tezgah"]).reset_index()
+    op_gun = _ozet(do[do["Gün"].isin(son_gunler)], ["Gün", "Operatör"]).reset_index()
+    pasif = []
+    if tum_tezgah:
+        p_t = [z for z in tum_tezgah if z not in set(dz["Tezgah"])]
+        pasif.append("Pasif tezgah (bu aralıkta kaydı yok): " + (", ".join(p_t) or "yok"))
+    if tum_operator:
+        p_o = [o for o in tum_operator if o not in set(do["Operatör"])]
+        pasif.append("Pasif operatör (bu aralıkta kaydı yok): " + (", ".join(p_o) or "yok"))
+
+    # c) Parça ve operasyon
+    lk = (d[d["Uzun Ref"].astype(str).str.strip().ne("-") & d["Parça"].notna()]
+          .groupby("Parça")["Uzun Ref"].first().astype(str).str.strip())
+    son_op = lk.map(FINAL_OP_HARITASI)
+    pr = _ozet(d[d["Parça"].notna()], ["Parça"])
+    pr["Islem_Goren_SN"] = (d[(d["Durum"] == "Üretim") & d["S/N"].notna()].groupby("Parça")["S/N"].nunique()
+                            .reindex(pr.index).fillna(0).astype(int))
+    pr["Son_Op"] = son_op.reindex(pr.index).fillna("?")
+    pr = pr.reset_index()
+    u = d[d["Durum"] == "Üretim"].copy()
+    u["Parça"] = u["Parça"].fillna("-")
+    u["Op"] = u["Op"].fillna("-")
+    po = (u.groupby(["Parça", "Op"]).agg(Uretim_sa=("Süre", "sum"), Tamamlanan_Op=("_adet", "sum"),
+                                         Nihai_Parca=("_nihai", "sum")).round(2).reset_index())
+    po["Rota"] = [("SON" if o == son_op.get(p) else "ara") if pd.notna(son_op.get(p)) else "?"
+                  for p, o in zip(po["Parça"], po["Op"])]
+    po["_n"] = pd.to_numeric(po["Op"], errors="coerce").fillna(9999)
+    po = po.sort_values(["Parça", "_n"]).drop(columns="_n")
+
+    # d) Duruş / Set-up / Rework olayları (tek tek)
+    ev = dd[dd["Durum"].isin(["Plansız_Duruş", "Set_Up", "Rework"])].sort_values(["Gün", sira]).copy()
+    ev["Tür"] = ev["Durum"].map({"Plansız_Duruş": "Duruş", "Set_Up": "Set-up", "Rework": "Rework"})
+    ev["Sure_sa"] = ev["Süre"].round(2)
+    ev = ev[["Gün", "Vardiya", "Tezgah", "Operatör", "Parça – Op", "Sure_sa", "Tür", "Sebep"]]
+
+    # e) Gün × Vardiya × Tezgah × Operatör × Parça-Op (S/N bazlı satırlar gruplanmış; son detay_gun gün)
+    detay_gunler = son_gunler[-detay_gun:]
+    ue = u[u["Gün"].isin(detay_gunler)].copy()
+    ue["Parca_Op"] = ue["Parça"] + "-" + ue["Op"]
+    anah = ["Gün", "Vardiya", "Tezgah", "Operatör", "Parca_Op"]
+    ge = ue.groupby(anah).agg(Sure_sa=("Süre", "sum"), Tamamlanan_Op=("_adet", "sum"), Nihai=("_nihai", "sum")).round(2)
+    ge["Nihai_SN"] = (ue[ue["_nihai"] == 1].groupby(anah)["S/N"].apply(lambda s: ";".join(s.astype(str)))
+                      .reindex(ge.index).fillna(""))
+    ge = ge.reset_index().sort_values(["Gün", "Vardiya", "Tezgah", "Operatör"])
+
+    baslik = (f"GÜNLÜK ÖZET | Tarih aralığı: {tarih_txt} | Satır: {len(d)} | Gün bazlı tablolar SON {len(son_gunler)} günü kapsar. "
+              "Tüm toplamlar HAZIR hesaplanmıştır: TOPLAM / TÜM GÜN / TÜM ARALIK satırlarını kullan, kendin toplama. "
+              "Nihai_Parca = rotanın SON operasyonu BİTTİ olan parça (nihai mamul); Tamamlanan_Op = ara operasyonlar dahil biten operasyon sayısı. "
+              "Gün = Excel'deki vardiya tarihi (gece vardiyasının sabah kayıtları vardiyanın başladığı güne yazılır).")
+    return "\n".join([
+        baslik, aralik,
+        "\n[A] GÜN × VARDİYA (saat + Tamamlanan_Op + Nihai_Parca; her günün sonunda TÜM GÜN toplamı)", _csv(ta),
+        "[B1] TEZGAH aralık toplamı", _csv(tez_top),
+        "[B2] OPERATÖR aralık toplamı", _csv(op_top),
+        *pasif,
+        "[B3] GÜN × TEZGAH", _csv(tez_gun),
+        "[B4] GÜN × OPERATÖR (bir günde kim kaç saat çalıştı)", _csv(op_gun),
+        "[C1] PARÇA toplamı (Son_Op = rotanın son operasyonu)", _csv(pr),
+        "[C2] PARÇA × OP (Rota: SON = nihai operasyon, ara = ara operasyon; Nihai_Parca yalnızca SON satırında dolu)", _csv(po),
+        "[D] DURUŞ / SET-UP / REWORK OLAYLARI (tek tek; Parça – Op alanında sebep metni de olabilir)", _csv(ev),
+        f"[E] GÜN × VARDİYA × TEZGAH × OPERATÖR × PARÇA-OP — yalnızca SON {len(detay_gunler)} gün: "
+        + ", ".join(f"{g_:%d.%m}" for g_ in detay_gunler) + " (Nihai_SN = o grupta nihai biten S/N'ler)", _csv(ge),
+    ])
 
 _SESLI = "aıoueiöü"
 _INCE = "eiöü"

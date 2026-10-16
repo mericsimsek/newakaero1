@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from common import veri_yukle_ve_filtrele
-from uretim_akisi import hazirla, sn_sayilari, biten_operasyon, nihai_biten_satirlar, gunluk_ai_baglami_olustur, op_ad, _op_sirala, CALISMA
+from uretim_akisi import hazirla, sn_sayilari, biten_operasyon, saat_tablosu, nihai_biten_satirlar, gunluk_ai_baglami_olustur, op_ad, _op_sirala, CALISMA
 
 st.set_page_config(page_title="Günlük Üretim Akışı", layout="wide", page_icon="🏭")
 st.markdown("""
@@ -76,12 +76,16 @@ k5.metric("✅ Biten Parça", sn_biten if c_bitti else "—",
 
 st.markdown("---")
 
+ozet_kabi = st.container()   # açılır kutu aşağıda, filtreler okunduktan sonra buraya doldurulacak
+
 st.markdown("### 🔍 Detaylı İnceleme ve Filtreler")
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 s_tez = c1.multiselect("🏭 Tezgah", sorted(T["Tezgah"].unique()), placeholder="Tümü", key="f_tez")
 s_kisi = c2.multiselect("👷 Operatör", sorted(T["Operatör"].unique()), placeholder="Tümü", key="f_kisi")
 s_durum = c3.multiselect("Tür (Üretim/Duruş)", sorted(T["Durum"].unique()), placeholder="Tümü",
                          format_func=lambda d: d.replace("_", " "), key="f_durum")
+s_vardiya = c4.multiselect("🕒 Vardiya", sorted(T["Vardiya"].unique()), placeholder="Tümü", key="f_vardiya")
+
 
 d1, d2, d3, d4, d5 = st.columns([2, 2, 1, 2, 2])
 s_parca = d1.multiselect("🔩 Parça Kodu", sorted(T["Parça"].dropna().unique()), placeholder="Tümü", key="f_parca")
@@ -91,9 +95,37 @@ s_op = d3.multiselect("⚙️ Op", sorted(T["Op"].dropna().unique(), key=_op_sir
 s_ara = d4.text_input("🔎 Arama (S/N)", placeholder="Örn: 2H50M", key="f_ara")
 s_sira = d5.radio("Sırala", ["⏱ Tezgah ve Zaman", "👤 Operatör ve Zaman", "🔗 S/N'ye Göre (Grupla)"], horizontal=True, key="f_sira")
 
+Gv = G[G["Vardiya"].isin(s_vardiya)] if s_vardiya else G   # sadece tarih + vardiya filtresi
+tum_tez = sorted(z for z in T["Tezgah"].unique() if z != "-")
+tum_op = sorted(o for o in T["Operatör"].unique() if o != "-")
+_sayi = {c: st.column_config.NumberColumn(format="%.2f") for c in
+         ["⚙️ Net Üretim (sa)", "🛑 Plansız Duruş (sa)", "🔧 Set-up (sa)", "♻️ Rework (sa)", "⏱️ Toplam (sa)"]}
 
+with ozet_kabi:
+    with st.expander("📊 Tezgah & Operatör Özeti (Çalışma Süreleri ve Aktif/Pasif Durumu)", expanded=False):
+        sol, sag = st.columns([3, 2])
+        with sol:
+            st.markdown("**🏭 Tezgahlar**")
+            tz_t = saat_tablosu(Gv, "Tezgah", tum_tez)
+            st.dataframe(tz_t, hide_index=True, use_container_width=True,
+                         height=min(60 + 35 * len(tz_t), 480), column_config=_sayi)
+        with sag:
+            st.markdown("**👷 Çalışan Operatörler**")
+            op_t = (saat_tablosu(Gv[Gv["Operatör"] != "-"], "Operatör")
+                    .sort_values("⏱️ Toplam (sa)", ascending=False)
+                    .rename(columns={"⚙️ Net Üretim (sa)": "Net Üretim", "🛑 Plansız Duruş (sa)": "Duruş",
+                                     "🔧 Set-up (sa)": "Set-up", "♻️ Rework (sa)": "Rework", "⏱️ Toplam (sa)": "Toplam Saat"}))
+            st.dataframe(op_t, hide_index=True, use_container_width=True,
+                         height=min(60 + 35 * len(op_t), 480),
+                         column_config={c: st.column_config.NumberColumn(format="%.2f")
+                                        for c in ["Net Üretim", "Duruş", "Set-up", "Rework", "Toplam Saat"]})
+            pas_t = [z for z in tum_tez if z not in set(Gv["Tezgah"])]
+            pas_o = [o for o in tum_op if o not in set(Gv["Operatör"])]
+            st.caption("💤 **Pasif tezgah:** " + (", ".join(pas_t) or "yok"))
+            st.caption("💤 **Pasif operatör:** " + (", ".join(pas_o) or "yok"))
 x = G
-for kol, secim in (("Tezgah", s_tez), ("Operatör", s_kisi), ("Durum", s_durum), ("Parça", s_parca), ("Uzun Ref", s_uzun), ("Op", s_op)):
+for kol, secim in (("Tezgah", s_tez), ("Operatör", s_kisi), ("Durum", s_durum), ("Vardiya", s_vardiya),
+                   ("Parça", s_parca), ("Uzun Ref", s_uzun), ("Op", s_op)):
     if secim:
         x = x[x[kol].isin(secim)]
 
@@ -109,7 +141,7 @@ else:
     anahtar = x["_a"].fillna(pd.Series("~" + x.index.astype(str), index=x.index))
     x = (x.assign(_k=anahtar, _ilk=x.groupby(anahtar)["_pz"].transform("min"))
          .sort_values(["_ilk", "_k", "_pz"], na_position="last"))
-ai_baglam = gunluk_ai_baglami_olustur(G, (d_bas, d_bit))
+ai_baglam = gunluk_ai_baglami_olustur(G, (d_bas, d_bit), tum_tezgah=tum_tez, tum_operator=tum_op)
 if x.empty:
     st.info("Seçili tarih ve filtrelerle eşleşen kayıt yok. Filtre seçimlerin korunuyor; tarihi ya da filtreleri değiştirebilirsin.")
     st.stop()
