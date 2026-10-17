@@ -164,18 +164,32 @@ taner 5
 
 ali 6 7
 
+dashboarda vardiya eklencek 
+
+çalışan çalışmamış olan tezgahlar ve operatörler küçük yere veya filtreli bilmiyom
+
+
+ai ın bilebilmesi gereken artıdan şeyler
+
+parçayı filtreleyince m01g03 mesela göstersin net çalışma saati vb. 
 
 ara operasyon bakılsın
 
-filtreli m01 mesela göstersin net çalışma saati vb. 
-çalışan tezgahlar çalışmayanlar
-vardiya ekle
-
 şu kişi kaç saat çalıştı etti naptı 
+
 11inde kimler çalıştı kaç saat 
 
-
 14 ekim 07:00 - 15:00 vardiyasında kaç adet parça tamamlandı
+
+burada kim setup yaptı ? nedeni ne
+
+rework kim yaptı duruş kim yaptı 
+
+
+
+
+
+
 
 
 1. parça süreleri CT  2.5 saatte parçayı 3 saatte yaptı
@@ -188,3 +202,28 @@ vardiyalarda 7 kişi var
 
 
 bi ustaların nazif ergin yaşar ustanın yanına git nasıl gidiyor de 
+
+
+
+
+her gün sabit formatta bunlar çekilcek :
+
+
+duruşlar 
+
+çalışan oper
+
+setup
+
+duruş nedeni
+
+kim kaç saat  çalıştı 
+toplam üretim ve saatler
+ Net Üretim
+0.00 sa
+🛑 Plansız Duruş
+2.75 sa
+🔧 Set-up
+0.00 sa
+♻️ Rework
+0.00 sa

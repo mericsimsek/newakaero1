@@ -174,12 +174,12 @@ def _haftalik_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, hafta_sayisi: int =
     if t.empty:
         return ""
 
-    iso = (t["Tarih"] - pd.Timedelta(days=3)).dt.isocalendar()           # Perşembe başlangıçlı hafta
+    iso = t["Tarih"].dt.isocalendar()         # Perşembe başlangıçlı hafta
     t["Yıl"], t["Hafta"] = iso.year.astype(int), iso.week.astype(int)
-    t["Hafta_Başı_Perş"] = (t["Tarih"] - pd.to_timedelta((t["Tarih"].dt.weekday - 3) % 7, unit="D")).dt.date
+    t["Hafta_Başı_Pzt"] = (t["Tarih"] - pd.to_timedelta(t["Tarih"].dt.weekday, unit="D")).dt.date
     son = t[["Yıl", "Hafta"]].drop_duplicates().sort_values(["Yıl", "Hafta"]).tail(hafta_sayisi)
     t = t.merge(son, on=["Yıl", "Hafta"])
-    h = ["Yıl", "Hafta", "Hafta_Başı_Perş"]
+    h = ["Yıl", "Hafta", "Hafta_Başı_Pzt"]
 
     # HAFTA-1: Tezgah bazlı: tüm durum saatleri + biten adet
     p = t.pivot_table(index=h + ["Tezgah"], columns="Durum", values="Süre", aggfunc="sum", fill_value=0).round(2)
@@ -188,7 +188,7 @@ def _haftalik_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, hafta_sayisi: int =
     t10.columns.name = None
     bt = biten_parcalar_tablosu(t)
     if not bt.empty:
-        _iso = (pd.to_datetime(bt["Tarih"]) - pd.Timedelta(days=3)).dt.isocalendar()
+        _iso = pd.to_datetime(bt["Tarih"]).dt.isocalendar()
         bt["Yıl"], bt["Hafta"] = _iso.year.astype(int), _iso.week.astype(int)
         _bp = bt.groupby(["Yıl", "Hafta", "Tezgah"]).size().rename("Biten_Parca").reset_index()
     else:
@@ -216,7 +216,7 @@ def _haftalik_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, hafta_sayisi: int =
     t13 = (d.groupby(h + ["Tezgah", "Durum", "Sebep"])["Süre"].sum().round(2).reset_index()
              .rename(columns={"Süre": "Saat"}))
     bas = ("Kullanıcı 'N. hafta' derse YALNIZCA Hafta=N satırlarını kullan; tarih aralığı hesaplama. "
-           "Hafta Perşembe–Çarşamba. Biten_Parca = rotanın son operasyonu BİTTİ olan parça, bittiği haftada sayılır. "
+           "Hafta Pazartesi–Pazar. Biten_Parca = rotanın son operasyonu BİTTİ olan parça, bittiği haftada sayılır. "
            "Tamamlanan_Op ara operasyonlar dahil operasyon sayısıdır, parça sayısı değildir.")
     return (
         "### HAFTA-1: TEZGAH TOPLAMLARI (saatler + Biten_Parca nihai mamul + Tamamlanan_Op). "
@@ -546,12 +546,12 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
         if not mh:
             return ""
         hno = int(mh[1])
-        iso = (t["Tarih"] - pd.Timedelta(days=3)).dt.isocalendar()
+        iso = t["Tarih"].dt.isocalendar()
         t = t[iso.week.astype(int) == hno]
         if t.empty:
             return ""
         d1, d2 = t["Tarih"].min(), t["Tarih"].max()
-        etiket = f"{hno}. hafta (Perşembe–Çarşamba)"
+        etiket = f"H{hno} (Pazartesi 07:00 → Pazartesi 07:00)"
     t = t[(t["Tarih"] >= d1) & (t["Tarih"] <= d2)]
     etiket = etiket or f"{d1:%d.%m.%Y} – {d2:%d.%m.%Y}"
     
