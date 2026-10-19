@@ -9,7 +9,18 @@ import re
 import numpy as np
 import pandas as pd
 import streamlit as st
+# 1. ADIM: Kendi yazdığın stil dosyasını buraya çağır
+from stil import stil_uygula 
 
+# Streamlit sayfa ayarların (zaten kodunda vardır)
+st.set_page_config(
+    page_title="Üretim Dashboard", 
+    layout="wide", 
+    initial_sidebar_state="expanded"
+)
+
+# 2. ADIM: CSS SİHRİNİ DEVREYE SOK!
+stil_uygula()
 from common import veri_yukle_ve_filtrele
 from uretim_akisi import hazirla, sn_sayilari, biten_operasyon, saat_tablosu, nihai_biten_satirlar, zaman_tanilama_tablolari, gunluk_ai_baglami_olustur, op_ad, _op_sirala, CALISMA, donem_sec, durum_saatleri, tezgah_listesi, kart_satiri,parca_durumu_goster, parca_durumu_df
 import yonetici_ozeti
@@ -94,6 +105,7 @@ if st.button("🔄 Veriyi Çek ve Güncelle"):
             st.rerun()
         else:
             st.error(mesaj)
+
 
 st.title("🏭 Günlük Üretim Akışı")
 
