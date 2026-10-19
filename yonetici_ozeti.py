@@ -27,7 +27,6 @@ def _grafik(p, baslik):
                       legend=dict(orientation="h", y=-0.25), yaxis_title="saat")
     st.plotly_chart(fig, use_container_width=True)
 
-
 def render(T, c_bitti):
     if T.empty or T["Tarih"].notna().sum() == 0:
         st.warning("Gösterilecek veri yok.")

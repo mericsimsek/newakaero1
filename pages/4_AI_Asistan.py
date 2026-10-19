@@ -3,7 +3,7 @@
 4_AI_Asistan.py — AI Fabrika Asistanı.
 """
 from __future__ import annotations
-from uretim_akisi import hazirla, sn_sayilari, biten_parcalar_tablosu, nihai_biten_metni
+from uretim_akisi import hazirla, sn_sayilari, biten_parcalar_tablosu, nihai_biten_metni, gunluk_ai_baglami_olustur, GUN_BASLANGIC_SAAT
 import pandas as pd
 import streamlit as st
 
@@ -148,9 +148,8 @@ else:
     st.sidebar.caption("Gemini yedeği kapalı (GEMINI_API_KEY veya google-generativeai yok).")
 
 st.sidebar.markdown("**Bağlam boyutu** (ücretsiz plandaki dakikalık token sınırı için)")
-TABLO7_MAX_SATIR = st.sidebar.number_input("TABLO 7 en fazla satır", 0, 2000, 50, step=50)
-TABLO8_MAX_SATIR = st.sidebar.number_input("TABLO 8 en fazla satır", 0, 2000, 80, step=20)
-
+TABLO7_MAX_SATIR = st.sidebar.number_input("TABLO 7 en fazla satır (0 = kapalı)", 0, 2000, 0, step=50)
+TABLO8_MAX_SATIR = st.sidebar.number_input("TABLO 8 en fazla satır (0 = kapalı)", 0, 2000, 0, step=20)
 
 def _csv_kirp(d: pd.DataFrame, n: int) -> str:
     """Tabloyu CSV'ye çevirir; çok uzunsa SON n satırı verir ve modele bunu söyler."""
@@ -286,6 +285,19 @@ def _gunluk_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, gun_sayisi: int = 14)
         "nihai parça sayısı için GÜN-3'te o operatörün satırlarını say.\n"
         + g4.to_csv(index=False)
     )
+
+def _gunluk_ai(df_ham: pd.DataFrame, df: pd.DataFrame) -> str:
+    """AI sayfasının kendi tarih aralığı için günlük özet (app6'dan bağımsız)."""
+    T, _ = hazirla(df_ham)
+    t = T.dropna(subset=["Tarih"])
+    if "TARİH" in df.columns and df["TARİH"].notna().any():
+        t = t[(t["Tarih"] >= df["TARİH"].min().normalize()) & (t["Tarih"] <= df["TARİH"].max().normalize())]
+    if t.empty:
+        return ""
+    return gunluk_ai_baglami_olustur(
+        t, (t["Tarih"].min().date(), t["Tarih"].max().date()),
+        tum_tezgah=sorted(z for z in T["Tezgah"].unique() if z != "-"),
+        tum_operator=sorted(o for o in T["Operatör"].unique() if o != "-"))
 # =============================================================================
 # BAĞLAM (CONTEXT) OLUŞTURMA
 # =============================================================================
@@ -323,7 +335,7 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
         parcalar.append("### TABLO 6: SETUP OPERATÖR×PARÇA KIRILIMI\n" + setup_kirilim.to_csv(index=False))
         kullanilan_metrikler.append("setup_ortalama")
 
-    if "TARİH" in df.columns:
+    if "TARİH" in df.columns and TABLO7_MAX_SATIR > 0:      # eski: if "TARİH" in df.columns:
         # 1. MEVCUT KODUN: Günlük mikro analizler için (Tablo 7)
         gunluk_ozet = df.groupby([df["TARİH"].dt.date, "TEZGAH", "Durum"])["Sure_Saat"].sum().reset_index()
         parcalar.append("### TABLO 7: GÜNLÜK TEZGAH-DURUM SÜRE ÖZETİ\n" + _csv_kirp(gunluk_ozet, TABLO7_MAX_SATIR))
@@ -344,13 +356,13 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
     ]
     mevcut_kolonlar = [col for col in secilecek_kolonlar if col in df.columns]
     
-    if mevcut_kolonlar:
+    if mevcut_kolonlar and TABLO8_MAX_SATIR > 0:            # eski: if mevcut_kolonlar:
         kronolojik_veri = df[mevcut_kolonlar].copy()
         if "Sure_Saat" in kronolojik_veri.columns:
             kronolojik_veri["Sure_Dakika"] = (kronolojik_veri["Sure_Saat"] * 60).round(0)
         parcalar.append("### TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI (Satır Bazlı Döküm)\n" + _csv_kirp(kronolojik_veri, TABLO8_MAX_SATIR))
     try:
-        for _fn in (_gunluk_baglam, _haftalik_baglam):
+        for _fn in (_gunluk_ai, _haftalik_baglam):          # eski: (_gunluk_baglam, _haftalik_baglam)
             _b = _fn(df_ham, df)
             if _b:
                 parcalar.append(_b)
@@ -379,13 +391,14 @@ tablolarına, KRONOLOJİK DETAY tablosuna (TABLO 8) ve METRİK SÖZLÜĞÜ'ne da
 
 KURALLAR:
 1. Her sayısal iddianı, hangi TABLO'dan ve hangi METRİK'ten geldiğini belirterek destekle.
-2. Kullanıcı duruş özeti, dakika dakika, parça bazlı veya kronolojik olay sorarsa KESİNLİKLE 'TABLO 8: KRONOLOJİK DETAYLI ETL ÇIKTISI' tablosunu satır satır tara. Operatör kodları yerine gerçek isimleri kullanarak detaylı listele.
-3. Bir duruşu raporlarken Operatör İsmi, Parça, Dakika (Sure_Dakika) ve Sebebini kesinlikle belirt.
+2. Duruş / set-up / rework olayı, kimin yaptığı ve sebebi sorulursa [D] listesini satır satır tara; 'en uzun / en çok süren' sorularında [D0]'ı kullan. TABLO 8 kenar çubuğundan açıksa dakika dakika detay için onu da kullan. Operatör kodları yerine gerçek isimleri kullan.
+3. Bir duruşu raporlarken Operatör İsmi, Tezgah, Parça-Op, Süre (sa) ve Sebebini kesinlikle belirt.
 4. Kullanıcı "bunu nasıl hesapladın?", "neden türettin?" veya "hangi formülle buldun?" diye sorarsa, İLGİLİ METRİĞİN TAM FORMÜLÜNÜ VE MANTIĞINI METRİK SÖZLÜĞÜ'nden birebir alıntıla.
 5. Veride olmayan bir şeyi UYDURMA. Emin değilsen açıkça "bu veriyle hesaplanamıyor" de.
-6. Farklı tabloları kendi kafandan ÇAPRAZLAMA (ör. operatör tablosu ile parça tablosunu birleştirip tezgah çıkarma). Operatör+tezgah+parça sorularında SADECE HAFTA-DETAY'ı kullan; orada satırı olmayan kombinasyon veride YOKTUR. Toplam sorularında HAFTA-1 / GÜN-1 satırlarını kullan; kendin topladıysan hangi satırları topladığını yaz.
-7. Bir operatörün gün/tarih aralığında kaç parça bitirdiği sorulursa SADECE GÜN-4'ü kullan: o operatörün Biten_Adet'lerini topla, Biten_SN'leri tek tek say ve listele. TABLO 3 duruş paretosudur, S/N kaynağı DEĞİLDİR; S/N için asla TABLO 3 gösterme.
-8. 'Kaç parça çıktı / biten parça' = Biten_Parca (nihai mamul, rotanın son operasyonu BİTTİ). Tamamlanan_Op ve Biten_Adet ara operasyonları da içeren operasyon sayısıdır, parça sayısı DEĞİLDİR; karıştırma.
+6. Farklı tabloları kendi kafandan ÇAPRAZLAMA. Haftalık operatör+tezgah+parça sorularında SADECE HAFTA-DETAY'ı kullan; orada satırı olmayan kombinasyon veride YOKTUR. Gün/aralık toplamlarında HAZIR toplam satırlarını kullan ([A] 'TÜM GÜN', [A2], 'TÜM ARALIK', [B1]–[B4], HAFTA-1); kendin topladıysan hangi satırları topladığını yaz.
+7. Bir kişinin belirli bir günde kaç saat çalıştığı: [B4]. Hangi parçada/tezgahta/vardiyada ne yaptığı: [E] (yalnızca son 3 gün var; daha eski gün sorulursa 'detay bağlamda yok' de). Parça bazlı süre ve hangi ara operasyonların yapıldığı: [C1]/[C2]. TABLO 3 duruş paretosudur, S/N kaynağı DEĞİLDİR.
+8. 'Kaç parça çıktı / biten parça' = Nihai_Parca / Biten_Parca (nihai mamul, rotanın son operasyonu BİTTİ). Tamamlanan_Op ve Biten_Adet ara operasyonları da içeren operasyon sayısıdır, parça sayısı DEĞİLDİR; karıştırma.
+9. Gün = üretim günü (07:00 → ertesi gün 07:00); gece vardiyası başladığı güne yazılır. Vardiya grupları satır başlangıç saatine göredir: Gündüz 07–15, Akşam 15–23, Gece 23–07 ([A2]).
 {SN_AI_KURALI}
 
 --- METRİK SÖZLÜĞÜ (bu sohbette kullanılan tablolarla ilgili formüller) ---
@@ -516,6 +529,31 @@ _AYLAR = {"ocak": 1, "subat": 2, "mart": 3, "nisan": 4, "mayis": 5, "haziran": 6
 def _norm(s: str) -> str:
     return str(s).translate(_TRM).lower()
 
+def _vardiya_bul(q: str, T: pd.DataFrame) -> list:
+    """Soruda '07:00 - 19:00' gibi bir vardiya varsa T'deki gerçek vardiya adını döndürür.
+    Saatsiz '7-15' ancak 'vardiya' kelimesiyle geçerse vardiya sayılır ('7-15 ekim' tarihtir)."""
+    bilinen = {}
+    for v in T["Vardiya"].dropna().unique():
+        s = re.findall(r"(\d{1,2})[:.](\d{2})", str(v))
+        if len(s) == 2:
+            bilinen[tuple(int(x) for pair in s for x in pair)] = v
+    bulunan = []
+    for m in re.finditer(r"(?<!\d)(\d{1,2})(?:[:.](\d{2}))?\s*[-–]\s*(\d{1,2})(?:[:.](\d{2}))?(?!\d)", q):
+        if ":" not in m.group(0) and "vardiya" not in q:
+            continue
+        anahtar = (int(m[1]), int(m[2] or 0), int(m[3]), int(m[4] or 0))
+        if anahtar in bilinen and bilinen[anahtar] not in bulunan:
+            bulunan.append(bilinen[anahtar])
+    return bulunan
+
+def _vgrup_bul(q: str) -> list:
+    """'gündüz / akşam / gece' kelimeleri -> Vardiya Grubu (satır başlangıç saatine göre)."""
+    return [g for g, kok in (("Gündüz", "gunduz"), ("Akşam", "aksam"), ("Gece", "gece")) if re.search(r"\b" + kok, q)]
+
+def _uretim_bugunu() -> pd.Timestamp:
+    """Şu an hangi üretim gününde olduğumuz (gün 07:00'de başlar)."""
+    return (pd.Timestamp.now() - pd.Timedelta(hours=GUN_BASLANGIC_SAAT)).normalize()
+
 def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
     """Soruda operatör + tarih/hafta varsa toplamları Python hesaplar (AI toplamasın)."""
     t = T.dropna(subset=["Tarih"]).copy()
@@ -541,7 +579,17 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
     d1 = d2 = None
     if gunler:
         d1, d2 = min(gunler), max(gunler)
+    
     if d1 is None:
+        bugun = _uretim_bugunu()
+        if re.search(r"\bbugun\b", q):
+            d1 = d2 = bugun
+            if not (t["Tarih"] == bugun).any():       # bugün henüz kayıt yok -> en son kayıt günü
+                d1 = d2 = t["Tarih"].max()
+                etiket = f"{d1:%d.%m.%Y} (bugün için kayıt yok; en son kayıt günü)"
+        elif re.search(r"\bdun\b", q):
+            d1 = d2 = bugun - pd.Timedelta(days=1)
+            etiket = f"{d1:%d.%m.%Y} (dün)"
         mh = re.search(r"(?<!\d)(\d{1,2})(?!\d)\s*\.?\s*hafta", q)
         if not mh:
             return ""
@@ -554,7 +602,14 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
         etiket = f"H{hno} (Pazartesi 07:00 → Pazartesi 07:00)"
     t = t[(t["Tarih"] >= d1) & (t["Tarih"] <= d2)]
     etiket = etiket or f"{d1:%d.%m.%Y} – {d2:%d.%m.%Y}"
-    
+    vard = _vardiya_bul(q, T)
+    vgr = _vgrup_bul(q) if "Vardiya Grubu" in t.columns else []
+    if vard:
+        t = t[t["Vardiya"].isin(vard)]
+        etiket += " | Vardiya " + ", ".join(vard)
+    if vgr:
+        t = t[t["Vardiya Grubu"].isin(vgr)]
+        etiket += " | " + ", ".join(vgr) + " (satır başlangıç saatine göre)"
     if not kisiler:
         tz_l = sorted({f"AB-{int(n):02d}" for n in re.findall(r"\bab\s*-?\s*(\d{1,2})\b", q)})
         tz_l = [z for z in tz_l if z in set(t["Tezgah"])]
@@ -614,6 +669,17 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
         for gun, g in bit.groupby(bit["Tarih"].dt.date):
             satirlar.append(f"  {gun:%d.%m.%Y}: {len(g)} adet — " + ", ".join(
                 f"{sn} ({tz}, {p} Op {o})" for sn, tz, p, o in zip(g["S/N"], g["Tezgah"], g["Parça"], g["Op"])))
+        uk = k[k["Durum"] == "Üretim"].assign(Parça=lambda d: d["Parça"].fillna("-"), Op=lambda d: d["Op"].fillna("-"))
+        if not uk.empty:
+            satirlar.append("  Tezgah / parça bazında üretim süresi:")
+            for (gun, tz, p, o), g in uk.groupby([uk["Tarih"].dt.date, "Tezgah", "Parça", "Op"]):
+                satirlar.append(f"    {gun:%d.%m.%Y} | {tz} | {p} Op {o}: {g['Süre'].sum():.2f} sa")
+        ol = k[k["Durum"].isin(["Plansız_Duruş", "Set_Up", "Rework"])]
+        if not ol.empty:
+            satirlar.append("  Duruş / Set-up / Rework kayıtları:")
+            for _, r in ol.sort_values("_bas").iterrows():
+                satirlar.append(f"    {r['Tarih']:%d.%m.%Y} {r['Vardiya']} | {r['Tezgah']} | {r['Durum'].replace('_', ' ')} {r['Süre']:.2f} sa | {r['Parça – Op']}"
+                                + (f" | sebep: {r['Sebep']}" if r['Sebep'] else ""))
     return "\n".join(satirlar)
 def _groq_cagri() -> str:
     mesajlar = [{"role": "system", "content": SISTEM_PROMPTU}]
@@ -675,6 +741,7 @@ def _cevap_uret(soru_metni: str) -> tuple[str, str]:
 if soru:
     try:
         _T = hazirla(df_ham)[0]
+        _T = _T[_T["Tarih"] >= pd.Timestamp(_bas_tarih)]
         hesap = _soru_hesabi(soru, _T)
         if not hesap:  # "hangi snler?" gibi takip soruları: önceki sorunun tarih/tezgah/operatörünü al
             onc = [m.get("gorunen") for m in st.session_state.sohbet_gecmisi if m["role"] == "user" and m.get("hesap")]

@@ -204,7 +204,10 @@ def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_opera
     ta["_s"] = (ta["Vardiya"] == "TÜM GÜN").astype(int)
     ta = ta.sort_values(["Gün", "_s", "Vardiya"]).drop(columns="_s")
     ta = ta[["Gün", "Vardiya"] + [c for c in ta.columns if c not in ("Gün", "Vardiya")]]
-
+    vg_blok = []
+    if "Vardiya Grubu" in dd.columns:
+        vg_t = _ozet(dd, ["Gün", "Vardiya Grubu"]).reset_index().sort_values(["Gün", "Vardiya Grubu"])
+        vg_blok = ["[A2] GÜN × VARDİYA GRUBU (Gündüz 07–15, Akşam 15–23, Gece 23–07; satır başlangıç saatine göre)", _csv(vg_t)]
     tum = _ozet(d.assign(_k="x"), ["_k"]).iloc[0]
     aralik = (f"TÜM ARALIK ({tarih_txt}): Üretim {tum['Uretim_sa']:.2f} sa | Plansız duruş {tum['Durus_sa']:.2f} sa | "
               f"Set-up {tum['SetUp_sa']:.2f} sa | Rework {tum['Rework_sa']:.2f} sa | Toplam {tum['Toplam_sa']:.2f} sa | "
@@ -250,6 +253,17 @@ def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_opera
     ev["Sure_sa"] = ev["Süre"].round(2)
     ev = ev[["Gün", "Vardiya", "Tezgah", "Operatör", "Parça – Op", "Sure_sa", "Tür", "Sebep"]]
 
+    # d0) En uzun olaylar + duruş sebepleri toplamı (TÜM aralık; 'en uzun / en çok' soruları için hazır)
+    eva = d[d["Durum"].isin(["Plansız_Duruş", "Set_Up", "Rework"])].copy()
+    eva["Tür"] = eva["Durum"].map({"Plansız_Duruş": "Duruş", "Set_Up": "Set-up", "Rework": "Rework"})
+    eva["Sure_sa"] = eva["Süre"].round(2)
+    eva["Aciklama"] = [s_ if s_ else (po.split("– Op ", 1)[1] if "– Op " in po else po)
+                       for s_, po in zip(eva["Sebep"].fillna(""), eva["Parça – Op"].fillna(""))]
+    en_uzun = (eva.sort_values("Sure_sa", ascending=False).groupby("Tür").head(3)
+                  .sort_values(["Tür", "Sure_sa"], ascending=[True, False])
+                  [["Tür", "Gün", "Vardiya", "Tezgah", "Operatör", "Parça – Op", "Sure_sa", "Aciklama"]])
+    sebep_top = (eva[eva["Tür"] == "Duruş"].groupby("Aciklama")["Sure_sa"].sum().round(2)
+                    .sort_values(ascending=False).head(8).reset_index())
     # e) Gün × Vardiya × Tezgah × Operatör × Parça-Op (S/N bazlı satırlar gruplanmış; son detay_gun gün)
     detay_gunler = son_gunler[-detay_gun:]
     ue = u[u["Gün"].isin(detay_gunler)].copy()
@@ -267,6 +281,7 @@ def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_opera
     return "\n".join([
         baslik, aralik,
         "\n[A] GÜN × VARDİYA (saat + Tamamlanan_Op + Nihai_Parca; her günün sonunda TÜM GÜN toplamı)", _csv(ta),
+        *vg_blok,
         "[B1] TEZGAH aralık toplamı", _csv(tez_top),
         "[B2] OPERATÖR aralık toplamı", _csv(op_top),
         *pasif,
@@ -274,6 +289,8 @@ def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_opera
         "[B4] GÜN × OPERATÖR (bir günde kim kaç saat çalıştı)", _csv(op_gun),
         "[C1] PARÇA toplamı (Son_Op = rotanın son operasyonu)", _csv(pr),
         "[C2] PARÇA × OP (Rota: SON = nihai operasyon, ara = ara operasyon; Nihai_Parca yalnızca SON satırında dolu)", _csv(po),
+        "[D0] EN UZUN 3 OLAY (Duruş / Set-up / Rework ayrı ayrı; TÜM ARALIK). 'En uzun / en çok süren' sorularını BURADAN cevapla", _csv(en_uzun),
+        "[D0b] PLANSIZ DURUŞ SEBEPLERİ — toplam saat (ilk 8, TÜM ARALIK)", sebep_top.to_csv(index=False),
         "[D] DURUŞ / SET-UP / REWORK OLAYLARI (tek tek; Parça – Op alanında sebep metni de olabilir)", _csv(ev),
         f"[E] GÜN × VARDİYA × TEZGAH × OPERATÖR × PARÇA-OP — yalnızca SON {len(detay_gunler)} gün: "
         + ", ".join(f"{g_:%d.%m}" for g_ in detay_gunler) + " (Nihai_SN = o grupta nihai biten S/N'ler)", _csv(ge),
