@@ -3,11 +3,10 @@
 4_AI_Asistan.py — AI Fabrika Asistanı.
 """
 from __future__ import annotations
-from uretim_akisi import hazirla, sn_sayilari, biten_parcalar_tablosu, nihai_biten_metni, gunluk_ai_baglami_olustur, GUN_BASLANGIC_SAAT
+from uretim_akisi import hazirla, sn_sayilari, biten_parcalar_tablosu, nihai_biten_metni, gunluk_ai_baglami_olustur, GUN_BASLANGIC_SAAT, _GUN_KISA
 import pandas as pd
 import streamlit as st
-
-from sn_izleme import sn_ai_baglami, SN_AI_KURALI   
+  
 from teyit import tablolari_topla, render_teyit      
 from common import (
     METRIC_REGISTRY, metrik_aciklamasi, veri_yukle_ve_filtrele,
@@ -22,7 +21,7 @@ OPERATOR_SOZLUGU = {
   "Op_005": "EREN TAMER YELEKÇİ", "Op_006": "ERTUĞRUL ÖZDEMİR", "Op_007": "HAMZA KARAASLAN", "Op_008": "HÜSEYİN YENİCE", 
   "Op_009": "HÜSEYİN YILMAZ", "Op_010": "İLKER SEZDİ", "Op_011": "MEHMET ALİ ÇOLAK", "Op_012": "MEHMET EMRE KARAKAŞ", 
   "Op_013": "MERT KUŞCU", "Op_014": "MESUT ARDIÇ", "Op_015": "MUHAMMED KORKMAZ", "Op_016": "NAZİF GÜÇLÜDAĞ", 
-  "Op_017": "NURULLAH ZENGİN", "Op_018": "ÖZCAN ÇELİK", "Op_019": "TANER GÜÇLÜDAĞ", "Op_020": "UMUT ÖZKAN", "Op_021": "YAŞAR ŞENOL"
+  "Op_017": "NURULLAH ZENGİN", "Op_018": "ÖZCAN ÇELİK", "Op_019": "TANER GÜÇLÜDAĞ", "Op_020": "UMUT ÖZKAN", "Op_021": "YAŞAR ŞENOL", "Op_022": "ALİ ÖZTEKİN"
 }
 
 st.set_page_config(page_title="AI Fabrika Asistanı", layout="wide", page_icon="🤖")
@@ -219,7 +218,7 @@ def _haftalik_baglam(df_ham: pd.DataFrame, df: pd.DataFrame, hafta_sayisi: int =
            "Tamamlanan_Op ara operasyonlar dahil operasyon sayısıdır, parça sayısı değildir.")
     return (
         "### HAFTA-1: TEZGAH TOPLAMLARI (saatler + Biten_Parca nihai mamul + Tamamlanan_Op). "
-        "Toplam sorularında BUNU kullan.\n"
+        "Haftalık TOPLAM için [H1] satırını kullan, kendin toplama.\n"
         + bas + "\n" + t10.to_csv(index=False) +
         "\n### HAFTA-DETAY: Operatör × Tezgah × Parça × Op (her satır tek bir kombinasyondur; "
         "satırı olmayan kombinasyon YOKTUR; Tamamlanan_Op = o operasyondaki bitiş sayısı, nihai parça sayısı DEĞİL)\n"
@@ -371,17 +370,7 @@ def _baglam_ve_kullanilan_metrikler(df: pd.DataFrame) -> tuple[str, list[str]]:
     return "\n\n".join(parcalar), sorted(set(kullanilan_metrikler))
 
 baglam, kullanilan_metrikler = _baglam_ve_kullanilan_metrikler(df)
-_sn_baglam = sn_ai_baglami(df)
-if _sn_baglam:
-    baglam = baglam + "\n\n" + _sn_baglam
 
-_gunluk = st.session_state.get("gunluk_ai_baglami")
-if _gunluk:
-    baglam += (
-        "\n\n### GÜNCEL TARİH ARALIĞI ÖZETİ (Günlük Üretim Akışı sayfasından)\n"
-        "Kullanıcı bir tarih, gün veya hafta sorarsa BU bölümü kullan. "
-        "TABLO 1 tüm dönemin toplamıdır, tarih aralığına göre hesaplanmamıştır.\n" + _gunluk
-    )
 
 tablolar = tablolari_topla(df)
 formul_bloklari = "\n\n".join(metrik_aciklamasi(k) for k in kullanilan_metrikler)
@@ -396,10 +385,10 @@ KURALLAR:
 4. Kullanıcı "bunu nasıl hesapladın?", "neden türettin?" veya "hangi formülle buldun?" diye sorarsa, İLGİLİ METRİĞİN TAM FORMÜLÜNÜ VE MANTIĞINI METRİK SÖZLÜĞÜ'nden birebir alıntıla.
 5. Veride olmayan bir şeyi UYDURMA. Emin değilsen açıkça "bu veriyle hesaplanamıyor" de.
 6. Farklı tabloları kendi kafandan ÇAPRAZLAMA. Haftalık operatör+tezgah+parça sorularında SADECE HAFTA-DETAY'ı kullan; orada satırı olmayan kombinasyon veride YOKTUR. Gün/aralık toplamlarında HAZIR toplam satırlarını kullan ([A] 'TÜM GÜN', [A2], 'TÜM ARALIK', [B1]–[B4], HAFTA-1); kendin topladıysan hangi satırları topladığını yaz.
-7. Bir kişinin belirli bir günde kaç saat çalıştığı: [B4]. Hangi parçada/tezgahta/vardiyada ne yaptığı: [E] (yalnızca son 3 gün var; daha eski gün sorulursa 'detay bağlamda yok' de). Parça bazlı süre ve hangi ara operasyonların yapıldığı: [C1]/[C2]. TABLO 3 duruş paretosudur, S/N kaynağı DEĞİLDİR.
+7. Bir kişinin belirli bir günde kaç saat çalıştığı: [B4]. Hangi vardiyada kim çalıştı: [B5]. Hangi parçada/tezgahta ne yaptığı: [E] (yalnızca son 7 gün var; daha eski gün sorulursa 'detay bağlamda yok' de). Parça bazlı süre ve ara operasyonlar: [C1]/[C2]. Hafta/gün tarihi: yalnızca [TAKVİM]; hafta toplamları: [H1]/[H2]/[H3]. TABLO 3 duruş paretosudur, S/N kaynağı DEĞİLDİR.
 8. 'Kaç parça çıktı / biten parça' = Nihai_Parca / Biten_Parca (nihai mamul, rotanın son operasyonu BİTTİ). Tamamlanan_Op ve Biten_Adet ara operasyonları da içeren operasyon sayısıdır, parça sayısı DEĞİLDİR; karıştırma.
-9. Gün = üretim günü (07:00 → ertesi gün 07:00); gece vardiyası başladığı güne yazılır. Vardiya grupları satır başlangıç saatine göredir: Gündüz 07–15, Akşam 15–23, Gece 23–07 ([A2]).
-{SN_AI_KURALI}
+9. Gün = üretim günü (07:00 → ertesi gün 07:00); gece vardiyası başladığı güne yazılır. Hafta Pazartesi 07:00'de başlar (G1 = Pazartesi). Perşembe–Çarşamba haftası YOKTUR. Vardiya = Excel'deki vardiya etiketi (örn. '07:00 - 19:00').
+
 
 --- METRİK SÖZLÜĞÜ (bu sohbette kullanılan tablolarla ilgili formüller) ---
 {formul_bloklari}
@@ -548,7 +537,7 @@ def _vardiya_bul(q: str, T: pd.DataFrame) -> list:
 
 def _vgrup_bul(q: str) -> list:
     """'gündüz / akşam / gece' kelimeleri -> Vardiya Grubu (satır başlangıç saatine göre)."""
-    return [g for g, kok in (("Gündüz", "gunduz"), ("Akşam", "aksam"), ("Gece", "gece")) if re.search(r"\b" + kok, q)]
+    return [g for g, kok in (("Gündüz", "gunduz"), ("Akşam", "aksam"), ("Gece", "gece")) if re.search(r"\b" + kok + r"(?!n)", q)]
 
 def _uretim_bugunu() -> pd.Timestamp:
     """Şu an hangi üretim gününde olduğumuz (gün 07:00'de başlar)."""
@@ -582,6 +571,8 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
     
     if d1 is None:
         bugun = _uretim_bugunu()
+        iso = t["Tarih"].dt.isocalendar()
+        son_hafta = int(t["Tarih"].max().isocalendar()[1])
         if re.search(r"\bbugun\b", q):
             d1 = d2 = bugun
             if not (t["Tarih"] == bugun).any():       # bugün henüz kayıt yok -> en son kayıt günü
@@ -590,16 +581,30 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
         elif re.search(r"\bdun\b", q):
             d1 = d2 = bugun - pd.Timedelta(days=1)
             etiket = f"{d1:%d.%m.%Y} (dün)"
-        mh = re.search(r"(?<!\d)(\d{1,2})(?!\d)\s*\.?\s*hafta", q)
-        if not mh:
-            return ""
-        hno = int(mh[1])
-        iso = t["Tarih"].dt.isocalendar()
-        t = t[iso.week.astype(int) == hno]
-        if t.empty:
-            return ""
-        d1, d2 = t["Tarih"].min(), t["Tarih"].max()
-        etiket = f"H{hno} (Pazartesi 07:00 → Pazartesi 07:00)"
+        else:
+            mh = (re.search(r"\b(?:hafta|week|h)\s*\.?\s*(\d{1,2})(?!\d)", q)
+                  or re.search(r"(?<!\d)(\d{1,2})(?:\s*\.|'?\s*(?:in|nin|un|nun))?\s*hafta", q))
+            if mh:
+                hno = int(mh[1])
+            elif re.search(r"gecen hafta|onceki hafta", q):
+                hno = son_hafta - 1
+            elif re.search(r"\bbu hafta\b", q):
+                hno = son_hafta
+            else:
+                return ""
+            th = t[iso.week.astype(int) == hno]
+            if th.empty:
+                return ""
+            mg = (re.search(r"(?<!\d)([1-7])\s*\.?\s*gun", q) or re.search(r"\bgun\s*([1-7])(?!\d)", q)
+                  or re.search(r"\bg\s*([1-7])(?!\d)", q))
+            pzt = th["Tarih"].min() - pd.Timedelta(days=int(th["Tarih"].min().weekday()))
+            if mg:
+                g = int(mg[1])
+                d1 = d2 = pzt + pd.Timedelta(days=g - 1)
+                etiket = f"H{hno} G{g} ({_GUN_KISA[g - 1]} {d1:%d.%m.%Y}; Pazartesi 07:00 başlangıçlı haftanın {g}. günü)"
+            else:
+                d1, d2 = th["Tarih"].min(), th["Tarih"].max()
+                etiket = f"H{hno} (Pazartesi 07:00 → Pazartesi 07:00; {d1:%d.%m} – {d2:%d.%m.%Y})"
     t = t[(t["Tarih"] >= d1) & (t["Tarih"] <= d2)]
     etiket = etiket or f"{d1:%d.%m.%Y} – {d2:%d.%m.%Y}"
     vard = _vardiya_bul(q, T)
@@ -630,6 +635,12 @@ def _soru_hesabi(soru: str, T: pd.DataFrame) -> str:
                     ("SEÇİLİ TEZGAHLAR TOPLAMI: " if tz_l else "FABRİKA TOPLAMI: ") + _ozet(f), "TEZGAH BAZLI:"]
         for tz, d in f.groupby("Tezgah"):
             satirlar.append(f"  {tz}: " + _ozet(d))
+        op_l = []
+        for op_, d in f[f["Operatör"].notna() & (f["Operatör"] != "-")].groupby("Operatör"):
+            op_l.append((d["Süre"].sum(), f"  {op_}: Üretim {d.loc[d['Durum'] == 'Üretim', 'Süre'].sum():.2f} sa | "
+                         f"Toplam {d['Süre'].sum():.2f} sa | BİTEN PARÇA (nihai): {sn_sayilari(d)[1]}"))
+        op_l.sort(key=lambda x: -x[0])
+        satirlar += [f"OPERATÖR BAZLI ({len(op_l)} kişi çalıştı):"] + [x[1] for x in op_l]
         satirlar.append(nihai_biten_metni(f))
         if tz_l or "hangi" in q or re.search(r"\bsn|s/n|seri|parca", q):
             u = f[f["Durum"] == "Üretim"].assign(Parça=lambda d: d["Parça"].fillna("-"), Op=lambda d: d["Op"].fillna("-"))
@@ -745,8 +756,9 @@ if soru:
         hesap = _soru_hesabi(soru, _T)
         if not hesap:  # "hangi snler?" gibi takip soruları: önceki sorunun tarih/tezgah/operatörünü al
             onc = [m.get("gorunen") for m in st.session_state.sohbet_gecmisi if m["role"] == "user" and m.get("hesap")]
-            if onc and len(soru.split()) <= 8 and re.search(
-                    r"\bsn|s/n|seri|parca|hangi|kim|kac|toplam|operator|tezgah|sure|saat|durus", _norm(soru)):
+            _ref = re.search(r"\bo gun\b|\bo hafta\b|\bayni (?:gun|hafta)\b|\bpeki\b", _norm(soru))
+            if onc and (_ref or (len(soru.split()) <= 8 and re.search(
+                    r"\bsn|s/n|seri|parca|hangi|kim|kac|toplam|operator|tezgah|sure|saat|durus", _norm(soru)))):
                 hesap = _soru_hesabi(onc[-1] + " " + soru, _T)
     except Exception:
         hesap = ""

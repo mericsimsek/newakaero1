@@ -86,6 +86,7 @@ RENK = {"Üretim": "#22c55e", "Plansız_Duruş": "#ef4444", "Set_Up": "#f59e0b",
 ETIKET = {"Üretim": "Net Üretim", "Plansız_Duruş": "Plansız Duruş", "Set_Up": "Set-up", "Rework": "Rework"}
 
 
+
 def _grafik(p, baslik):
     if go is None:
         st.bar_chart(p.rename(columns=ETIKET))
@@ -280,8 +281,15 @@ else:
     x = (x.assign(_k=anahtar, _ilk=x.groupby(anahtar)["_pz"].transform("min"))
          .sort_values(["_ilk", "_k", "_pz"], na_position="last"))
 
-st.session_state["gunluk_ai_baglami"] = gunluk_ai_baglami_olustur(
-    G, (d_bas, d_bit), tum_tezgah=tum_tez, tum_operator=tum_op)
+@st.cache_data(show_spinner=False)
+def _ai_baglam(_T, veri_anahtari):
+    return gunluk_ai_baglami_olustur(_T, (_T["Tarih"].min().date(), _T["Tarih"].max().date()),
+                                     tum_tezgah=tezgah_listesi(_T),
+                                     tum_operator=sorted(o for o in _T["Operatör"].unique() if o != "-"),
+                                     gun_siniri=21, detay_gun=7)
+
+
+st.session_state["gunluk_ai_baglami"] = _ai_baglam(T, (len(T), str(T["Tarih"].max()), round(float(T["Süre"].sum()), 2)))
 
 aktif = [f"{ad}: {', '.join(map(str, v))}" for ad, v in (
     ("Tezgah", s_tez), ("Operatör", s_kisi), ("Tür", [d.replace("_", " ") for d in s_durum]),
@@ -339,6 +347,7 @@ with ust:
                 _donut(kd)
 
     # yan yana kartlı paneller (2'li satırlar)
+
     yan = [p for p in ("🏭 Tezgah Durumu", "👷 Operatörler", "📦 Parça Durumu") if p in paneller]
     for i in range(0, len(yan), 2):
         parca = yan[i:i + 2]

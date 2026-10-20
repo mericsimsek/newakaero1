@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 _CSS = """
-.block-container{padding-top:1.6rem;padding-bottom:3rem;max-width:1600px}
+.block-container{padding-top:3.6rem;padding-bottom:3rem;max-width:1600px}
 footer{visibility:hidden}
 hr{margin:1.2rem 0;opacity:.3}
 

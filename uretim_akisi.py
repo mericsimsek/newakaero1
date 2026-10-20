@@ -163,7 +163,22 @@ def saat_tablosu(d: pd.DataFrame, anahtar: str, tum: list | None = None) -> pd.D
     p["⏱️ Toplam (sa)"] = p.sum(axis=1)
     return p.round(2).rename_axis(anahtar).reset_index()
 
-
+def parca_say(x: pd.DataFrame, anahtar: list) -> pd.DataFrame:
+    """Gruplara göre fiziksel parça (Parça + S/N) sayıları — dashboard'daki Parça Durumu ile aynı mantık.
+    Islem_Goren_Parca = Nihai_Parca + Ara_Op_Biten_Parca + Devam_Parca (öncelik: nihai > ara > devam)."""
+    kolon = ["Islem_Goren_Parca", "Nihai_Parca", "Ara_Op_Biten_Parca", "Devam_Parca"]
+    s = x[(x["Durum"] == "Üretim") & x["S/N"].notna()]
+    if s.empty:
+        return pd.DataFrame(columns=kolon)
+    anahtar = list(anahtar)
+    s = s.assign(_pk=s["Parça"].fillna("-") + "|" + s["S/N"], _nih=_nihai_biten_maske(s))
+    g = s.groupby(anahtar + ["_pk"]).agg(nih=("_nih", "any"), tam=("_adet", "max"))
+    g["Durum"] = np.where(g["nih"], "nihai", np.where(g["tam"] > 0, "ara", "devam"))
+    ct = (g.reset_index().groupby(anahtar)["Durum"].value_counts().unstack(fill_value=0)
+            .reindex(columns=["nihai", "ara", "devam"], fill_value=0))
+    ct.columns = ["Nihai_Parca", "Ara_Op_Biten_Parca", "Devam_Parca"]
+    ct.insert(0, "Islem_Goren_Parca", ct.sum(axis=1))
+    return ct
 def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_operator=None, gun_siniri=14, detay_gun=7):
     """Seçili aralığı AI için kompakt, ÖN-HESAPLANMIŞ metne çevirir (AI toplama yapmasın). Sadece str döndürür."""
     if isinstance(secili_tarih, (tuple, list)) and len(secili_tarih) > 0:
@@ -176,6 +191,8 @@ def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_opera
 
     d = df_tablo.copy()
     d["Gün"] = pd.to_datetime(d["Tarih"]).dt.date
+    _iso = pd.to_datetime(d["Tarih"]).dt.isocalendar()
+    d["Hafta"] = ("H" + _iso["week"].astype("Int64").astype(str)).where(_iso["week"].notna(), "-")
     d["Vardiya"] = d["Vardiya"].fillna("-")
     d["_nihai"] = d.index.isin(nihai_biten_satirlar(d)).astype(int)
     son_gunler = sorted(d["Gün"].unique())[-gun_siniri:]
@@ -188,7 +205,9 @@ def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_opera
         p.columns = ["Uretim_sa", "Durus_sa", "SetUp_sa", "Rework_sa"]
         p["Toplam_sa"] = p.sum(axis=1)
         p["Tamamlanan_Op"] = x.groupby(anahtar)["_adet"].sum().reindex(p.index).fillna(0).astype(int)
-        p["Nihai_Parca"] = x.groupby(anahtar)["_nihai"].sum().reindex(p.index).fillna(0).astype(int)
+        ps = parca_say(x, anahtar)
+        for c_ in ("Islem_Goren_Parca", "Nihai_Parca", "Ara_Op_Biten_Parca", "Devam_Parca"):
+            p[c_] = ps[c_].reindex(p.index).fillna(0).astype(int) if not ps.empty else 0
         return p.round(2)
 
     def _csv(t):
@@ -211,7 +230,9 @@ def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_opera
     tum = _ozet(d.assign(_k="x"), ["_k"]).iloc[0]
     aralik = (f"TÜM ARALIK ({tarih_txt}): Üretim {tum['Uretim_sa']:.2f} sa | Plansız duruş {tum['Durus_sa']:.2f} sa | "
               f"Set-up {tum['SetUp_sa']:.2f} sa | Rework {tum['Rework_sa']:.2f} sa | Toplam {tum['Toplam_sa']:.2f} sa | "
-              f"Tamamlanan_Op {int(tum['Tamamlanan_Op'])} | Nihai_Parca {int(tum['Nihai_Parca'])}")
+              f"Islem_Goren_Parca {int(tum['Islem_Goren_Parca'])} (= Nihai_Parca {int(tum['Nihai_Parca'])} + "
+              f"Ara_Op_Biten_Parca {int(tum['Ara_Op_Biten_Parca'])} + Devam_Parca {int(tum['Devam_Parca'])}) | "
+              f"Biten_Operasyon(ara dahil) {int(tum['Tamamlanan_Op'])}")
 
     # b) Tezgah ve operatör (aralık toplamı + gün bazlı)
     dz = d[d["Tezgah"].notna() & (d["Tezgah"] != "-")]
@@ -220,6 +241,24 @@ def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_opera
     op_top = _ozet(do, ["Operatör"]).reset_index()
     tez_gun = _ozet(dz[dz["Gün"].isin(son_gunler)], ["Gün", "Tezgah"]).reset_index()
     op_gun = _ozet(do[do["Gün"].isin(son_gunler)], ["Gün", "Operatör"]).reset_index()
+    vo = (_ozet(do[do["Gün"].isin(son_gunler)], ["Gün", "Vardiya", "Operatör"]).reset_index()
+          [["Gün", "Vardiya", "Operatör", "Uretim_sa", "Toplam_sa"]])
+    # takvim: hafta -> gün eşleşmesi (G1 = Pazartesi)
+    _gd = pd.DataFrame({"Gün": sorted(g for g in d["Gün"].dropna().unique())})
+    _gd["ts"] = pd.to_datetime(_gd["Gün"])
+    _gi = _gd["ts"].dt.isocalendar()
+    _gd["Hafta"] = "H" + _gi["week"].astype(int).astype(str)
+    _gd["G"] = _gi["day"].astype(int)
+    takvim = "\n".join(f"{h}: " + " · ".join(f"G{g} {_GUN_KISA[g - 1]} {t:%d.%m}" for g, t in zip(k["G"], k["ts"]))
+                       for h, k in _gd.groupby("Hafta", sort=False))
+    # hafta tabloları (Pzt 07:00 → Pzt 07:00)
+    dh = d[d["Hafta"] != "-"]
+    h1 = _ozet(dh, ["Hafta"]).reset_index()
+    h1.insert(1, "Gun_Sayisi", h1["Hafta"].map(dh.groupby("Hafta")["Gün"].nunique()).astype(int))
+    h2 = (_ozet(dh[dh["Operatör"].notna() & (dh["Operatör"] != "-")], ["Hafta", "Operatör"]).reset_index()
+          [["Hafta", "Operatör", "Uretim_sa", "Toplam_sa", "Islem_Goren_Parca", "Nihai_Parca"]])
+    h3 = _ozet(dh[dh["Tezgah"].notna() & (dh["Tezgah"] != "-")], ["Hafta", "Tezgah"]).reset_index()
+
     pasif = []
     if tum_tezgah:
         p_t = [z for z in tum_tezgah if z not in set(dz["Tezgah"])]
@@ -276,8 +315,18 @@ def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_opera
 
     baslik = (f"GÜNLÜK ÖZET | Tarih aralığı: {tarih_txt} | Satır: {len(d)} | Gün bazlı tablolar SON {len(son_gunler)} günü kapsar. "
               "Tüm toplamlar HAZIR hesaplanmıştır: TOPLAM / TÜM GÜN / TÜM ARALIK satırlarını kullan, kendin toplama. "
-              "Nihai_Parca = rotanın SON operasyonu BİTTİ olan parça (nihai mamul); Tamamlanan_Op = ara operasyonlar dahil biten operasyon sayısı. "
-              "Gün = Excel'deki vardiya tarihi (gece vardiyasının sabah kayıtları vardiyanın başladığı güne yazılır).")
+              "PARÇA SAYISI sorulursa Islem_Goren_Parca (işlem gören), Nihai_Parca (rota sonu FİNİSH bitti), "
+              "Ara_Op_Biten_Parca (ara operasyonu bitti, sonraki operasyonu bekliyor), Devam_Parca (hiç operasyon bitmedi) kullan; "
+              "Islem_Goren_Parca = Nihai_Parca + Ara_Op_Biten_Parca + Devam_Parca. "
+              "Tamamlanan_Op parça sayısı DEĞİL, ara operasyonlar dahil biten OPERASYON sayısıdır; "
+              "'X operasyon bitti' cümlesini parça sayısı gibi sunma. "
+              "Gün = ÜRETİM GÜNÜ (sabah 07:00 → ertesi sabah 07:00; gece vardiyası başladığı güne yazılır). "
+              "Hafta Pazartesi 07:00'de başlar (G1 = Pazartesi … G7 = Pazar). "
+              "Bir vardiyada KİMİN çalıştığı sorulursa yalnızca [B5] GÜN × VARDİYA × OPERATÖR tablosunu kullan; "
+              "[B4]'te vardiya yoktur. Hafta/gün sorusunda (örn. 'hafta 41 gün 6') tarihi YALNIZCA [TAKVİM]'den bul; "
+              "hafta toplamı için [H1]/[H2]/[H3] kullan (Gun_Sayisi < 7 ise hafta eksiktir). Perşembe–Çarşamba haftası YOKTUR; "
+              "HAFTA-1, TABLO 12, TABLO 21 gibi eski tablolar varsa bunlarla [H*] çelişirse [H*] doğrudur. "
+              "Tablolarda olmayan bilgiyi tahmin etme, 'bu veride yok' de.")
     return "\n".join([
         baslik, aralik,
         "\n[A] GÜN × VARDİYA (saat + Tamamlanan_Op + Nihai_Parca; her günün sonunda TÜM GÜN toplamı)", _csv(ta),
@@ -287,6 +336,11 @@ def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_opera
         *pasif,
         "[B3] GÜN × TEZGAH", _csv(tez_gun),
         "[B4] GÜN × OPERATÖR (bir günde kim kaç saat çalıştı)", _csv(op_gun),
+        "[B5] GÜN × VARDİYA × OPERATÖR (hangi vardiyada kim çalıştı, saat)", _csv(vo),
+        "[TAKVİM] Hafta → gün eşleşmesi (G1 = Pazartesi 07:00'de başlayan gün):", takvim,
+        "[H1] HAFTA toplamı (Pzt 07:00 → Pzt 07:00)", _csv(h1),
+        "[H2] HAFTA × OPERATÖR", _csv(h2),
+        "[H3] HAFTA × TEZGAH", _csv(h3),
         "[C1] PARÇA toplamı (Son_Op = rotanın son operasyonu)", _csv(pr),
         "[C2] PARÇA × OP (Rota: SON = nihai operasyon, ara = ara operasyon; Nihai_Parca yalnızca SON satırında dolu)", _csv(po),
         "[D0] EN UZUN 3 OLAY (Duruş / Set-up / Rework ayrı ayrı; TÜM ARALIK). 'En uzun / en çok süren' sorularını BURADAN cevapla", _csv(en_uzun),
@@ -567,7 +621,7 @@ def donem_sec(T: pd.DataFrame, anahtar: str, aralik_izni: bool = False, kap=None
     g = h1 + pd.Timedelta(days=i)
     c_t.caption(f"🕖 {_GUN_KISA[i]} {g:%d.%m} 07:00 → {_GUN_KISA[(i + 1) % 7]} {g + pd.Timedelta(days=1):%d.%m} 07:00")
     return g.date(), g.date(), 1
-    
+
 def olay_gunlugu(G: pd.DataFrame, tum_tez: list, d_bas, d_bit) -> pd.DataFrame:
     """Duruş / Set-up / Rework olayları (zamana göre) + dönemde hiç kaydı olmayan tezgahlar."""
     ev = G[G["Durum"].isin(["Plansız_Duruş", "Set_Up", "Rework"])].sort_values("_sira")
