@@ -132,4 +132,5 @@ def tablo_stili(gos):
         return ""
     s = gos.style
     s = (s.map if hasattr(s, "map") else s.applymap)(_renk, subset=["Durum / Sebep"])
-    return s.format({"Süre (sa)": "{:.2f}", "Tarih": lambda d: d.strftime("%d.%m.%Y") if pd.notna(d) else ""})
+    _gun = lambda d: d.strftime("%d.%m.%Y") if pd.notna(d) else ""
+    return s.format({"Süre (sa)": "{:.2f}", "Tarih": _gun, "Üretim Günü": _gun})

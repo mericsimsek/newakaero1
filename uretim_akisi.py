@@ -4,7 +4,7 @@ import re
 import numpy as np
 import pandas as pd
 import streamlit as st
-
+from stil import kpi_satiri
 OPERATOR_SOZLUGU = {
     "Op_001": "AŞKIN SAKALLI", "Op_002": "BERAT TUNÇ", "Op_003": "CİHAN SARIGÜL", "Op_004": "EMRE TOPRAK",
     "Op_005": "EREN TAMER YELEKÇİ", "Op_006": "ERTUĞRUL ÖZDEMİR", "Op_007": "HAMZA KARAASLAN", "Op_008": "HÜSEYİN YENİCE",
@@ -459,27 +459,27 @@ def durum_saatleri(d: pd.DataFrame) -> dict:
     s = d.groupby("Durum")["Süre"].sum()
     return {"uretim": float(s.get("Üretim", 0.0)), "durus": float(s.get("Plansız_Duruş", 0.0)),
             "setup": float(s.get("Set_Up", 0.0)), "rework": float(s.get("Rework", 0.0))}
-def kart_satiri(d: pd.DataFrame, c_bitti, onceki=None, onceki_biten=None):
-    """5 kart tek satır. onceki (durum_saatleri çıktısı) verilirse fark oku gösterir. Sıfır = '—'."""
+def kart_satiri(d: pd.DataFrame, c_bitti, onceki=None, onceki_adi="önceki dönem"):
     s = durum_saatleri(d)
-    biten = sn_sayilari(d)[1] if c_bitti else None
     sa = lambda v: "—" if not v else f"{v:,.2f} sa"
 
-    def fark(a, b, tam=False):
-        if b is None:
-            return None
-        f = a - b
-        return f"{f:+,.0f}" if tam else f"{f:+,.2f} sa"
+    def alt(k):
+        if onceki is None:
+            return "seçili dönem"
+        f = s[k] - onceki[k]
+        return f"{'▲' if f > 0 else '▼' if f < 0 else '•'} {f:+,.2f} sa · {onceki_adi}"
 
-    g = (lambda k: None) if onceki is None else (lambda k: onceki[k])
-    c = st.columns(5)
-    c[0].metric("⚙️ Net Üretim", sa(s["uretim"]), fark(s["uretim"], g("uretim")))
-    c[1].metric("🛑 Plansız Duruş", sa(s["durus"]), fark(s["durus"], g("durus")), delta_color="inverse")
-    c[2].metric("🔧 Set-up", sa(s["setup"]), fark(s["setup"], g("setup")), delta_color="inverse")
-    c[3].metric("♻️ Rework", sa(s["rework"]), fark(s["rework"], g("rework")), delta_color="inverse")
-    c[4].metric("✅ Biten Parça", "—" if not biten else biten,
-                None if biten is None else fark(biten, onceki_biten, True),
-                help="Rotasının SON (FİNİSH) operasyonu BİTTİ olan farklı S/N sayısı (nihai mamul).")
+    biten, alt_b = "—", ""
+    if c_bitti:
+        kk = parca_durumu_df(d)
+        n = kk["Durum"].value_counts()
+        biten = n.get("nihai", 0) or "—"
+        alt_b = f"{len(kk)} işlendi · {n.get('ara', 0)} ara op. · {n.get('devam', 0)} devam"
+    kpi_satiri([("⚙️ Net Üretim", sa(s["uretim"]), alt("uretim"), "yesil"),
+                ("🛑 Plansız Duruş", sa(s["durus"]), alt("durus"), "kirmizi"),
+                ("🔧 Set-up", sa(s["setup"]), alt("setup"), "sari"),
+                ("♻️ Rework", sa(s["rework"]), alt("rework"), "mor"),
+                ("✅ Biten Parça (nihai)", biten, alt_b, "mavi")])
 
 def _kisa_adlar(op: pd.Series) -> pd.Series:
     """İlk ad; aynı ilk ada sahip birden fazla operatör varsa (MEHMET ALİ / MEHMET EMRE) ilk iki kelime."""
@@ -527,22 +527,21 @@ def parca_durumu_goster(d: pd.DataFrame, c_bitti):
     k = parca_durumu_df(d)
     if k.empty:
         return
-    n = k["Durum"].value_counts()
-    st.caption(f"📦 {len(k)} parça işlem gördü → ✅ {n.get('nihai', 0)} nihai bitti (FİNİSH) · "
-               f"🔧 {n.get('ara', 0)} ara operasyonu bitti, sonraki operasyonu bekliyor · "
-               f"⏳ {n.get('devam', 0)} devam ediyor")
-    with st.expander("📦 Parça durumu detayı"):
+    with st.expander("📦 Parça Durumu Detayı", expanded=False):
+        st.caption("Nihai = rotanın son (FİNİSH) operasyonu bitti · Ara op. = başka bir operasyonu bitti, "
+                   "sonraki operasyonu bekliyor · Devam = dönemde hiç operasyon bitmedi")
         st.dataframe(parca_durumu_tablosu(k), hide_index=True, use_container_width=True)
 
-
-def donem_sec(T: pd.DataFrame, anahtar: str, aralik_izni: bool = False):
-    """Hafta + Gün seçici (07:00→07:00). Döner (d_bas, d_bit, kaydirma_gun) ya da None.
-    kaydirma_gun: önceki dönemle kıyas için (gün=1, hafta=7, aralık=uzunluk)."""
+def donem_sec(T: pd.DataFrame, anahtar: str, aralik_izni: bool = False, kap=None):
+    """Hafta + Gün seçici (07:00→07:00). Döner (d_bas, d_bit, kaydirma_gun) ya da None."""
     mn, mx = T["Tarih"].min().date(), T["Tarih"].max().date()
     haftalar = hafta_secenekleri(T)
     YOK = "— Tarih aralığı —"
-    c_h, c_t = st.columns([2, 6])
-    h_sec = c_h.selectbox("🗓️ Hafta", ([YOK] if aralik_izni else []) + [h[0] for h in haftalar],
+    if kap is None:
+        c_h, c_t = st.columns([2, 7])
+    else:
+        c_h = c_t = kap
+    h_sec = c_h.selectbox("🗓️ Hafta", [h[0] for h in haftalar] + ([YOK] if aralik_izni else []),
                           key=f"{anahtar}_hafta")
     if h_sec == YOK:
         sec = c_t.date_input("📅 Üretim Günü", value=(mx, mx), min_value=mn, max_value=mx,
@@ -554,10 +553,13 @@ def donem_sec(T: pd.DataFrame, anahtar: str, aralik_izni: bool = False):
         else:
             d_bas = d_bit = sec
         return d_bas, d_bit, (d_bit - d_bas).days + 1
-
     _, h1, h2 = next(h for h in haftalar if h[0] == h_sec)
     gunler = ["Tüm Hafta"] + [f"G{i + 1} {_GUN_KISA[i]} {h1 + pd.Timedelta(days=i):%d.%m}" for i in range(7)]
-    g_sec = c_t.radio("📅 Gün", gunler, horizontal=True, key=f"{anahtar}_gun_{h1:%Y%m%d}")
+    gkey = f"{anahtar}_gun_{h1:%Y%m%d}"
+    if hasattr(st, "segmented_control"):
+        g_sec = c_t.segmented_control("📅 Gün", gunler, default="Tüm Hafta", key=gkey) or "Tüm Hafta"
+    else:
+        g_sec = c_t.radio("📅 Gün", gunler, horizontal=(kap is None), key=gkey)
     if g_sec == "Tüm Hafta":
         c_t.caption(f"🕖 Pzt {h1:%d.%m} 07:00 → Pzt {h2 + pd.Timedelta(days=1):%d.%m} 07:00")
         return h1.date(), h2.date(), 7
@@ -565,8 +567,7 @@ def donem_sec(T: pd.DataFrame, anahtar: str, aralik_izni: bool = False):
     g = h1 + pd.Timedelta(days=i)
     c_t.caption(f"🕖 {_GUN_KISA[i]} {g:%d.%m} 07:00 → {_GUN_KISA[(i + 1) % 7]} {g + pd.Timedelta(days=1):%d.%m} 07:00")
     return g.date(), g.date(), 1
-
-
+    
 def olay_gunlugu(G: pd.DataFrame, tum_tez: list, d_bas, d_bit) -> pd.DataFrame:
     """Duruş / Set-up / Rework olayları (zamana göre) + dönemde hiç kaydı olmayan tezgahlar."""
     ev = G[G["Durum"].isin(["Plansız_Duruş", "Set_Up", "Rework"])].sort_values("_sira")
