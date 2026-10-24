@@ -321,10 +321,10 @@ with ust:
 
     paneller = _panel_sec()
 
-    if "📈 Grafikler" in paneller:
+    if "📈 Grafikler" in paneller:  
         if kd.empty:
             st.info("Süzgeçlerle eşleşen kayıt yok.")
-        else:
+        else:  
             sol, sag = st.columns(2)
             with sol:
                 gorunum = "🏭 Tezgah Bazlı"

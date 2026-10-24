@@ -10,7 +10,7 @@ OPERATOR_SOZLUGU = {
     "Op_005": "EREN TAMER YELEKÇİ", "Op_006": "ERTUĞRUL ÖZDEMİR", "Op_007": "HAMZA KARAASLAN", "Op_008": "HÜSEYİN YENİCE",
     "Op_009": "HÜSEYİN YILMAZ", "Op_010": "İLKER SEZDİ", "Op_011": "MEHMET ALİ ÇOLAK", "Op_012": "MEHMET EMRE KARAKAŞ",
     "Op_013": "MERT KUŞCU", "Op_014": "MESUT ARDIÇ", "Op_015": "MUHAMMED KORKMAZ", "Op_016": "NAZİF GÜÇLÜDAĞ",
-    "Op_017": "NURULLAH ZENGİN", "Op_018": "ÖZCAN ÇELİK", "Op_019": "TANER GÜÇLÜDAĞ", "Op_020": "UMUT ÖZKAN", "Op_021": "YAŞAR ŞENOL","Op_022": "ALİ ÖZTEKİN",
+    "Op_017": "NURULLAH ZENGİN", "Op_018": "ÖZCAN ÇELİK", "Op_019": "TANER GÜÇLÜDAĞ", "Op_020": "UMUT ÖZKAN", "Op_021": "YAŞAR ŞENOL","Op_022": "ALİ ÖZTEKİN","Op_023": "GIZEM YILDIRIM","Op_024": "İLYAS KARADENİZ"
 }
 CALISMA = ["Üretim", "Set_Up", "Rework"]
 _TR = str.maketrans("İıŞşĞğÜüÖöÇç", "IiSsGgUuOoCc")
@@ -33,7 +33,7 @@ def _dk(v):
         return np.nan if pd.isna(v) else round((float(v) % 1) * 1440)
     if hasattr(v, "hour") and hasattr(v, "minute"):
         return v.hour * 60 + v.minute
-    m = re.search(r"(\d{1,2})[:.](\d{2})", str(v))
+    m = re.search(r"(\d{1,2})[:.](\d{2})", str(v)) 
     return int(m[1]) * 60 + int(m[2]) if m else np.nan
 
 def _vardiya(v):
@@ -54,6 +54,7 @@ def _bas_zaman(tarih, vard, bas_dk):
 def _bitti_maske(s: pd.Series) -> pd.Series:
     return (s.astype(str).str.replace("\u0307", "", regex=False).str.translate(_TR)
             .str.upper().str.contains("BITTI", regex=False, na=False))
+
 
 def _bitti_kolonu(x: pd.DataFrame):
     adaylar = [c for c in x.columns if str(c).strip() == "parça"]
