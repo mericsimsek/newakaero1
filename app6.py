@@ -14,7 +14,7 @@ import streamlit as st
 from common import veri_kaynagi_secici
 from uretim_akisi import (hazirla, saat_tablosu, nihai_biten_satirlar, gunluk_ai_baglami_olustur, _op_sirala, CALISMA,
                           donem_sec, durum_saatleri, tezgah_listesi, kart_satiri, parca_durumu_df,
-                          parca_durumu_tablosu, olay_gunlugu, _GUN_KISA)
+                          parca_durumu_tablosu,ct_sapma_tablosu, olay_gunlugu, _GUN_KISA)
 from stil import stil_uygula, sayfa_basligi, bolum_basligi, filtre_seridi, cipler, tablo_stili, kpi_satiri
 
 # Streamlit sayfa ayarların (zaten kodunda vardır)
@@ -133,7 +133,7 @@ def _toplam_ekle(t, anahtar):
 
 # --- Sidebar iskeleti: dönem → veri kaynağı → güncelle → AI ---
 # ---------- Panel yardımcıları ----------
-PANELLER = ["📈 Grafikler", "🏭 Tezgah Durumu", "👷 Operatörler", "📦 Parça Durumu", "⚠️ Dikkat Edilecekler"]
+PANELLER = ["📈 Grafikler", "🏭 Tezgah Durumu", "👷 Operatörler", "📦 Parça Durumu", "🎯 C/T Sapma", "⚠️ Dikkat Edilecekler"]
 
 
 def _panel_sec():
@@ -196,7 +196,20 @@ def _dikkat_paneli(Gv, tum_tez, d_bas, d_bit):
         st.dataframe(log.sort_values("Süre (sa)", ascending=False, na_position="last"), hide_index=True,
                      use_container_width=True, height=min(60 + 35 * len(log), 420),
                      column_config={"Süre (sa)": st.column_config.NumberColumn(format="%.2f")})
-
+def _ct_paneli(kd):
+    bolum_basligi("🎯 C/T Sapma", "operasyon BİTTİ ile kapanınca tüm süresi C/T ile kıyaslanır")
+    gor = st.radio("Kırılım", ["Operatör (genel)", "Operatör × Parça–Op"], horizontal=True,
+                   key="ct_kirilim", label_visibility="collapsed")
+    t = ct_sapma_tablosu(kd, ["Operatör"] if gor.startswith("Operatör (") else ["Operatör", "Parça – Op"])
+    if t.empty:
+        st.info("Bu seçimde C/T'si olan ve BİTTİ ile kapanmış operasyon yok.")
+        return
+    st.caption("Sapma % > 0 → C/T'den yavaş, < 0 → hızlı. Operasyonu birkaç kişi yaptıysa C/T, çalıştıkları saatlere göre "
+               "paylaştırılır. Gerçek süresi C/T'nin %30'undan az olan operasyonlar (muhtemelen hatalı giriş) "
+               "hesaba katılmaz, 'Şüpheli' sütununda sayılır. Herkes eksi çıkıyorsa C/T güncel değil demektir.")
+    cfg = {c: st.column_config.NumberColumn(format="%.2f") for c in ["Gerçek (sa)", "Beklenen (sa)", "Sapma (sa)"]}
+    cfg["Sapma %"] = st.column_config.NumberColumn(format="%.1f")
+    st.dataframe(t, hide_index=True, use_container_width=True, height=min(60 + 35 * len(t), 460), column_config=cfg)
 
 # --- Sidebar: veri kaynağı → güncelle → AI ---
 df_ham, kaynak_notu = veri_kaynagi_secici("home")
@@ -365,6 +378,10 @@ with ust:
         with st.container(border=True):
             _dikkat_paneli(Gv, tum_tez, d_bas, d_bit)
 
+    if "🎯 C/T Sapma" in paneller:
+        with st.container(border=True):
+            _ct_paneli(kd)
+
 # --- ANA TABLO ---
 bolum_basligi("📋 Üretim Kayıtları", "tezgah · operatör · parça · süre")
 if x.empty:
@@ -389,7 +406,8 @@ else:
             st.caption("Tabloda her parçanın son (FİNİSH) operasyon satırı görünüyor.")
 
     gos = xg[["Tarih", "Vardiya", "Saat", "Tezgah", "Operatör", "Parça – Op", "Uzun Ref", "S/N",
-              "İşlem Adımı", "Süre", "Adet", "Durum / Sebep"]].copy()
+              "İşlem Adımı", "Süre", "C/T (sa)", "Op Süresi (sa)", "Sapma (sa)", "Sapma %", "Adet",
+              "Durum / Sebep"]].copy()
     gos["Tarih"] = gos["Tarih"].dt.date
     gos["S/N"] = gos["S/N"].fillna("")
     gos = gos.rename(columns={"Tarih": "Üretim Günü", "Süre": "Süre (sa)"})
@@ -400,4 +418,8 @@ else:
                  key=f"tablo_{s_sira}_{sadece_biten}_{len(xg)}",
                  column_config=None if stilli else {
                      "Üretim Günü": st.column_config.DateColumn(format="DD.MM.YYYY"),
-                     "Süre (sa)": st.column_config.NumberColumn(format="%.2f")})
+                     "Süre (sa)": st.column_config.NumberColumn(format="%.2f"),
+                     "C/T (sa)": st.column_config.NumberColumn(format="%.2f"),
+                     "Op Süresi (sa)": st.column_config.NumberColumn(format="%.2f"),
+                     "Sapma (sa)": st.column_config.NumberColumn(format="%.2f"),
+                     "Sapma %": st.column_config.NumberColumn(format="%.1f%")})

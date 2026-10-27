@@ -227,3 +227,6 @@ toplam üretim ve saatler
 0.00 sa
 ♻️ Rework
 0.00 sa
+
+
+taner geç çıkarıyor

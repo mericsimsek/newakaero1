@@ -180,6 +180,31 @@ def parca_say(x: pd.DataFrame, anahtar: list) -> pd.DataFrame:
     ct.columns = ["Nihai_Parca", "Ara_Op_Biten_Parca", "Devam_Parca"]
     ct.insert(0, "Islem_Goren_Parca", ct.sum(axis=1))
     return ct
+def ct_sapma_tablosu(d: pd.DataFrame, anahtar=("Operatör",)) -> pd.DataFrame:
+    """BİTTİ bazlı C/T sapması (operatör veya operatör × parça-op). Birden çok kişi çalıştıysa operasyonun C/T'si
+    kişilerin çalıştığı saatlere göre paylaştırılır. Gerçek süresi C/T'nin %30'undan az (şüpheli) operasyonlar hariç tutulur."""
+    anahtar = list(anahtar)
+    kol = anahtar + ["Tamamlanan Op", "Gerçek (sa)", "Beklenen (sa)", "Sapma (sa)", "Sapma %", "Şüpheli"]
+    s = d[(d["Durum"] == "Üretim") & d["_bek"].notna() & (d["Operatör"] != "-")]
+    ok = s[~s["_supheli"]]
+    if ok.empty:
+        return pd.DataFrame(columns=kol)
+    sup = s[s["_supheli"]].groupby(anahtar)["_ac"].nunique().rename("Şüpheli")
+    g = ok.groupby(anahtar).agg(**{"Tamamlanan Op": ("_ac", "nunique"), "Gerçek (sa)": ("Süre", "sum"),
+                                   "Beklenen (sa)": ("_bek", "sum")})
+    g = g.join(sup)
+    g["Şüpheli"] = g["Şüpheli"].fillna(0).astype(int)
+    g["Sapma (sa)"] = g["Gerçek (sa)"] - g["Beklenen (sa)"]
+    g["Sapma %"] = g["Sapma (sa)"] / g["Beklenen (sa)"] * 100
+    g = g.sort_values("Gerçek (sa)", ascending=False).reset_index()
+    top = {a: ("TOPLAM" if i == 0 else "") for i, a in enumerate(anahtar)}
+    gercek, bek = ok["Süre"].sum(), ok["_bek"].sum()
+    top.update({"Tamamlanan Op": ok["_ac"].nunique(), "Gerçek (sa)": gercek, "Beklenen (sa)": bek,
+                "Sapma (sa)": gercek - bek, "Sapma %": (gercek - bek) / bek * 100,
+                "Şüpheli": int(s[s["_supheli"]]["_ac"].nunique())})
+    g = pd.concat([g, pd.DataFrame([top])], ignore_index=True)
+    return g[kol].round(2)
+    
 def gunluk_ai_baglami_olustur(df_tablo, secili_tarih, tum_tezgah=None, tum_operator=None, gun_siniri=14, detay_gun=7):
     """Seçili aralığı AI için kompakt, ÖN-HESAPLANMIŞ metne çevirir (AI toplama yapmasın). Sadece str döndürür."""
     if isinstance(secili_tarih, (tuple, list)) and len(secili_tarih) > 0:
@@ -415,6 +440,7 @@ def _fiziksel_zaman(U: pd.DataFrame) -> pd.Series:
 
 GUN_MODU = "07_07"             # "07_07" = patronun kuralı; "23_23" = Excel Tarih aynen (yalnızca karşılaştırma)
 GUN_BASLANGIC_SAAT = 7
+CT_DUSUK_GUVEN_ORANI = 0.3   # gerçek süre, C/T'nin bu oranından azsa 'şüpheli' (muhtemelen hatalı giriş)
 EXCEL_GUN_SINIRI_DK = 23 * 60  # Excel günü 23:00'te döner: başlangıç >= 23:00 ise takvim tarihi = Tarih - 1
 _GUN_KISA = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"]
 
@@ -722,4 +748,22 @@ def hazirla(veri: pd.DataFrame, gun_modu: str = GUN_MODU):
     T["İşlem Adımı"] = U["İşlem Adımı"].reindex(T.index).fillna("")
     T["Adet"] = U["Adet"].reindex(T.index).fillna("")
     T["_adet"] = U["_adet"].reindex(T.index).fillna(0).astype(int)
+        # --- C/T ve BİTTİ bazlı sapma: operasyon (tur) BİTTİ ile kapanınca TÜM süresi C/T ile kıyaslanır ---
+    ct_ham = pd.Series(k("ÜRETİM_C/T"), index=x.index)
+    if ct_ham.dtype == object:
+        ct_ham = ct_ham.astype(str).str.replace(",", ".", regex=False)
+    ct = pd.to_numeric(ct_ham, errors="coerce")
+    T["C/T (sa)"] = ct.where((T["Durum"] == "Üretim") & (ct > 0))
+    gt = U.groupby("_ac")
+    tur_sure = gt["Süre"].transform("sum")
+    tur_ct = T["C/T (sa)"].reindex(U.index).groupby(U["_ac"]).transform("median")
+    gecerli = (gt["_adet"].transform("max") == 1) & tur_ct.notna() & (tur_sure > 0)
+    bitis = gecerli & (U["_adet"] == 1)
+    fark = tur_sure - tur_ct
+    T["_ac"] = U["_ac"].reindex(T.index)
+    T["_bek"] = (tur_ct * U["Süre"] / tur_sure).where(gecerli).reindex(T.index)
+    T["_supheli"] = (gecerli & (tur_sure < CT_DUSUK_GUVEN_ORANI * tur_ct)).reindex(T.index).fillna(False).astype(bool)
+    T["Op Süresi (sa)"] = tur_sure.where(bitis).reindex(T.index)
+    T["Sapma (sa)"] = fark.where(bitis).reindex(T.index)
+    T["Sapma %"] = (fark / tur_ct * 100).where(bitis).reindex(T.index)
     return T, c_bitti

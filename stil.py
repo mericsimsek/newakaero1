@@ -122,15 +122,25 @@ def cipler(ogeler) -> None:
 # --- tablo ---
 _TON = (("Plansız", "rgba(239,68,68,.20)"), ("Set Up", "rgba(245,158,11,.22)"), ("Rework", "rgba(168,85,247,.20)"))
 
-
 def tablo_stili(gos):
-    """Durum / Sebep sütununu hafifçe renklendirir (yalnızca o sütun), Tarih ve Süre biçimini ayarlar."""
+    """Durum / Sebep ve Sapma % sütunlarını hafifçe renklendirir, tarih/süre/C/T biçimini ayarlar."""
     def _renk(v):
         for k, c in _TON:
             if str(v).startswith(k):
                 return f"background-color:{c}"
         return ""
+
+    def _sapma(v):                     # + : C/T'den yavaş (kırmızı), − : hızlı (yeşil); ±%10 tolerans
+        if pd.isna(v):
+            return ""
+        return ("background-color:rgba(239,68,68,.22)" if v > 10 else
+                "background-color:rgba(34,197,94,.22)" if v < -10 else "")
+
+    _gun = lambda d: d.strftime("%d.%m.%Y") if pd.notna(d) else ""
+    _f = lambda bicim: (lambda v: bicim.format(v) if pd.notna(v) else "")
     s = gos.style
     s = (s.map if hasattr(s, "map") else s.applymap)(_renk, subset=["Durum / Sebep"])
-    _gun = lambda d: d.strftime("%d.%m.%Y") if pd.notna(d) else ""
-    return s.format({"Süre (sa)": "{:.2f}", "Tarih": _gun, "Üretim Günü": _gun})
+    if "Sapma %" in gos.columns:
+        s = (s.map if hasattr(s, "map") else s.applymap)(_sapma, subset=["Sapma %"])
+    return s.format({"Süre (sa)": "{:.2f}", "Tarih": _gun, "Üretim Günü": _gun, "C/T (sa)": _f("{:.2f}"),
+                     "Op Süresi (sa)": _f("{:.2f}"), "Sapma (sa)": _f("{:+.2f}"), "Sapma %": _f("{:+.1f}%")})
