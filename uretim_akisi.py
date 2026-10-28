@@ -649,6 +649,29 @@ def donem_sec(T: pd.DataFrame, anahtar: str, aralik_izni: bool = False, kap=None
     c_t.caption(f"🕖 {_GUN_KISA[i]} {g:%d.%m} 07:00 → {_GUN_KISA[(i + 1) % 7]} {g + pd.Timedelta(days=1):%d.%m} 07:00")
     return g.date(), g.date(), 1
 
+def sebep_ozeti(d: pd.DataFrame) -> pd.DataFrame:
+    """Duruş / Set-up / Rework olaylarını SEBEBE göre toplar: Adet, Toplam (sa), Pay %. Sebebi boş olan
+    Set-up/Rework satırları 'Set-up · PARÇA' diye, boş duruşlar 'Belirtilmemiş' diye gruplanır."""
+    kol = ["Olay", "Sebep", "Adet", "Toplam (sa)", "Pay %"]
+    ev = d[d["Durum"].isin(["Plansız_Duruş", "Set_Up", "Rework"])]
+    if ev.empty:
+        return pd.DataFrame(columns=kol)
+    olay = ev["Durum"].map({"Plansız_Duruş": "Duruş", "Set_Up": "Set-up", "Rework": "Rework"})
+    sebep = ev["Sebep"].fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
+    parca = ev["Parça"].fillna("").astype(str)
+    bos = sebep == ""
+    sebep = sebep.mask(bos & (olay == "Duruş"), "Belirtilmemiş")
+    sebep = sebep.mask(bos & (olay != "Duruş"), olay + np.where(parca != "", " · " + parca, ""))
+    g = (pd.DataFrame({"Olay": olay, "Sebep": sebep, "Süre": ev["Süre"]})
+           .groupby(["Olay", "Sebep"], as_index=False).agg(Adet=("Süre", "size"), **{"Toplam (sa)": ("Süre", "sum")}))
+    toplam = g["Toplam (sa)"].sum()
+    g["Pay %"] = g["Toplam (sa)"] / toplam * 100 if toplam else 0.0
+    g["_o"] = g["Olay"].map({"Duruş": 0, "Set-up": 1, "Rework": 2})
+    g = g.sort_values(["_o", "Toplam (sa)"], ascending=[True, False]).drop(columns="_o")
+    son = pd.DataFrame([{"Olay": "TOPLAM", "Sebep": "", "Adet": int(g["Adet"].sum()),
+                         "Toplam (sa)": toplam, "Pay %": np.nan}])
+    return pd.concat([g, son], ignore_index=True)[kol].round(2)
+
 def olay_gunlugu(G: pd.DataFrame, tum_tez: list, d_bas, d_bit) -> pd.DataFrame:
     """Duruş / Set-up / Rework olayları (zamana göre) + dönemde hiç kaydı olmayan tezgahlar."""
     ev = G[G["Durum"].isin(["Plansız_Duruş", "Set_Up", "Rework"])].sort_values("_sira")

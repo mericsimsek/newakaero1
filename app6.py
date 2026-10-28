@@ -14,7 +14,7 @@ import streamlit as st
 from common import veri_kaynagi_secici
 from uretim_akisi import (hazirla, saat_tablosu, nihai_biten_satirlar, gunluk_ai_baglami_olustur, _op_sirala, CALISMA,
                           donem_sec, durum_saatleri, tezgah_listesi, kart_satiri, parca_durumu_df,
-                          parca_durumu_tablosu,ct_sapma_tablosu, olay_gunlugu, _GUN_KISA)
+                          parca_durumu_tablosu,ct_sapma_tablosu, olay_gunlugu,sebep_ozeti , _GUN_KISA)
 from stil import stil_uygula, sayfa_basligi, bolum_basligi, filtre_seridi, cipler, tablo_stili, kpi_satiri
 
 # Streamlit sayfa ayarların (zaten kodunda vardır)
@@ -188,14 +188,21 @@ def _parca_paneli(kd, c_bitti):
 
 
 def _dikkat_paneli(Gv, tum_tez, d_bas, d_bit):
-    bolum_basligi("⚠️ Dikkat Edilecekler", "duruş / set-up / rework olayları, pasif tezgahlar")
+    bolum_basligi("⚠️ Dikkat Edilecekler", "sebebe göre özet · olay listesi · pasif tezgahlar")
+    ozet = sebep_ozeti(Gv)
+    if not ozet.empty:
+        st.markdown("**Sebebe göre özet** (hangi sebepten kaç saat)")
+        st.dataframe(ozet, hide_index=True, use_container_width=True, height=min(60 + 35 * len(ozet), 420),
+                     column_config={"Toplam (sa)": st.column_config.NumberColumn(format="%.2f"),
+                                    "Pay %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
     log = olay_gunlugu(Gv, tum_tez, d_bas, d_bit)
     if log.empty:
         st.success("Planlanmayan olay yok ✅")
-    else:
-        st.dataframe(log.sort_values("Süre (sa)", ascending=False, na_position="last"), hide_index=True,
-                     use_container_width=True, height=min(60 + 35 * len(log), 420),
-                     column_config={"Süre (sa)": st.column_config.NumberColumn(format="%.2f")})
+        return
+    st.markdown("**Olay listesi** (en uzun olan üstte)")
+    st.dataframe(log.sort_values("Süre (sa)", ascending=False, na_position="last"), hide_index=True,
+                 use_container_width=True, height=min(60 + 35 * len(log), 420),
+                 column_config={"Süre (sa)": st.column_config.NumberColumn(format="%.2f")})
 def _ct_paneli(kd):
     bolum_basligi("🎯 C/T Sapma", "operasyon BİTTİ ile kapanınca tüm süresi C/T ile kıyaslanır")
     gor = st.radio("Kırılım", ["Operatör (genel)", "Operatör × Parça–Op"], horizontal=True,
